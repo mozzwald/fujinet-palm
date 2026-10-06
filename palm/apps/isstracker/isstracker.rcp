@@ -1,6 +1,10 @@
 #include "isstracker_rsc.h"
 
 BITMAP ID MapBitmap "map.bmp"
+BITMAPCOLOR ID ColorMapBitmap "map_color.bmp" COLORTABLE
+
+ICONFAMILY "icons/satellite_l.bmp" "" "" "icons/satellite_l_color.bmp" COLORTABLE
+SMALLICONFAMILY "icons/satellite_s.bmp" "" "" "icons/satellite_s_color.bmp" COLORTABLE
 
 FORM ID MainForm AT (0 0 160 160)
 NOFRAME

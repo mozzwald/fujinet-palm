@@ -3,7 +3,7 @@
  * ISS Tracker -- shows the International Space Station's current position
  * on a small world map, refetched every 30 seconds, plus a "Crew" list of
  * everyone currently in space. Targets Palm OS 3.1 / DragonBall EZ
- * (Handspring Visor Deluxe), 160x160 mono/4-gray.
+ * (Handspring Visor Deluxe), with an 8-bit color path on color handhelds.
  *
  * Built on fujinet-lib-palmos (the standard FujiNet client library), the
  * same way ../fujiconfig does: network_open/network_json_parse/
@@ -70,6 +70,55 @@ static char gTimeLine[24];
 static char gStatusLine[48] = "";
 
 static UInt32 gNextFetchTicks;
+
+static Boolean gColorScreen = false;
+static Boolean gChangedScreenMode = false;
+static UInt32 gOriginalDepth;
+static Boolean gOriginalColor;
+
+/* Palm OS 3.5 introduced the color window calls. Check the ROM before
+ * touching those traps, so the same PRC still runs on Palm OS 3.1. */
+static void InitScreenMode(void)
+{
+    UInt32 romVersion;
+    UInt32 depth, supportedDepths;
+    Boolean color, supportsColor;
+
+    if (FtrGet(sysFtrCreator, sysFtrNumROMVersion, &romVersion) != errNone ||
+        romVersion < sysMakeROMVersion(3, 5, 0, sysROMStageRelease, 0)) {
+        return;
+    }
+    if (WinScreenMode(winScreenModeGetSupportsColor, NULL, NULL, NULL,
+                      &supportsColor) != errNone || !supportsColor ||
+        WinScreenMode(winScreenModeGet, NULL, NULL, &depth, &color) != errNone) {
+        return;
+    }
+
+    gOriginalDepth = depth;
+    gOriginalColor = color;
+    if (!color || depth < 8) {
+        Boolean enableColor = true;
+        UInt32 colorDepth = 8;
+
+        if (WinScreenMode(winScreenModeGetSupportedDepths, NULL, NULL,
+                          &supportedDepths, NULL) != errNone ||
+            !(supportedDepths & (1UL << 7)) ||
+            WinScreenMode(winScreenModeSet, NULL, NULL, &colorDepth,
+                          &enableColor) != errNone) {
+            return;
+        }
+        gChangedScreenMode = true;
+    }
+    gColorScreen = true;
+}
+
+static void RestoreScreenMode(void)
+{
+    if (gChangedScreenMode) {
+        WinScreenMode(winScreenModeSet, NULL, NULL, &gOriginalDepth,
+                      &gOriginalColor);
+    }
+}
 
 /* ------------------------------------------------------------------ */
 /* Crew state (static globals, not stack -- see FetchCrew)             */
@@ -220,8 +269,11 @@ static void DrawMap(void)
     MemHandle h;
     UInt8 i;
     RectangleType r;
+    RectangleType oldClip;
+    IndexedColorType oldFore = 0;
+    RGBColorType rgb;
 
-    h = DmGetResource(bitmapRsc, MapBitmap);
+    h = DmGetResource(bitmapRsc, gColorScreen ? ColorMapBitmap : MapBitmap);
     if (h) {
         BitmapType *bmp = (BitmapType *)MemHandleLock(h);
 
@@ -230,22 +282,69 @@ static void DrawMap(void)
         DmReleaseResource(h);
     }
 
+    WinGetClip(&oldClip);
+    r.topLeft.x = MAP_X;
+    r.topLeft.y = MAP_Y;
+    r.extent.x = MAP_W;
+    r.extent.y = MAP_H;
+    WinSetClip(&r);
+
+    if (gColorScreen) {
+        rgb.index = 0;
+        rgb.r = 0xFF;
+        rgb.g = 0xCC;
+        rgb.b = 0x33;
+        oldFore = WinSetForeColor(WinRGBToIndex(&rgb));
+    }
+
     for (i = 0; i < gTrailCount; i++) {
-        WinDrawLine(gTrailX[i], gTrailY[i], gTrailX[i], gTrailY[i]);
+        if (gColorScreen) {
+            WinDrawLine((Coord)(gTrailX[i] - 1), gTrailY[i],
+                        (Coord)(gTrailX[i] + 1), gTrailY[i]);
+        } else {
+            WinDrawLine(gTrailX[i], gTrailY[i], gTrailX[i], gTrailY[i]);
+        }
     }
 
     if (gHavePos) {
-        r.topLeft.x = (Coord)(gCurX - 3);
-        r.topLeft.y = (Coord)(gCurY - 3);
-        r.extent.x = 7;
-        r.extent.y = 7;
-        WinEraseRectangle(&r, 0);
-
-        WinDrawLine((Coord)(gCurX - 3), (Coord)(gCurY - 3), (Coord)(gCurX + 3), (Coord)(gCurY + 3));
-        WinDrawLine((Coord)(gCurX - 3), (Coord)(gCurY + 3), (Coord)(gCurX + 3), (Coord)(gCurY - 3));
-        WinDrawLine((Coord)(gCurX - 3), gCurY, (Coord)(gCurX + 3), gCurY);
-        WinDrawLine(gCurX, (Coord)(gCurY - 3), gCurX, (Coord)(gCurY + 3));
+        if (gColorScreen) {
+            /* Repainting the bitmap above removes the old marker. A white
+             * halo keeps the red cross visible over both land and sea. */
+            rgb.r = rgb.g = rgb.b = 0xFF;
+            WinSetForeColor(WinRGBToIndex(&rgb));
+            WinDrawLine((Coord)(gCurX - 3), gCurY,
+                        (Coord)(gCurX + 3), gCurY);
+            WinDrawLine(gCurX, (Coord)(gCurY - 3),
+                        gCurX, (Coord)(gCurY + 3));
+            rgb.r = 0xFF;
+            rgb.g = 0x33;
+            rgb.b = 0x33;
+            WinSetForeColor(WinRGBToIndex(&rgb));
+            WinDrawLine((Coord)(gCurX - 2), (Coord)(gCurY - 2),
+                        (Coord)(gCurX + 2), (Coord)(gCurY + 2));
+            WinDrawLine((Coord)(gCurX - 2), (Coord)(gCurY + 2),
+                        (Coord)(gCurX + 2), (Coord)(gCurY - 2));
+            WinDrawLine((Coord)(gCurX - 2), gCurY,
+                        (Coord)(gCurX + 2), gCurY);
+            WinDrawLine(gCurX, (Coord)(gCurY - 2),
+                        gCurX, (Coord)(gCurY + 2));
+        } else {
+            r.topLeft.x = (Coord)(gCurX - 3);
+            r.topLeft.y = (Coord)(gCurY - 3);
+            r.extent.x = 7;
+            r.extent.y = 7;
+            WinEraseRectangle(&r, 0);
+            WinDrawLine((Coord)(gCurX - 3), (Coord)(gCurY - 3), (Coord)(gCurX + 3), (Coord)(gCurY + 3));
+            WinDrawLine((Coord)(gCurX - 3), (Coord)(gCurY + 3), (Coord)(gCurX + 3), (Coord)(gCurY - 3));
+            WinDrawLine((Coord)(gCurX - 3), gCurY, (Coord)(gCurX + 3), gCurY);
+            WinDrawLine(gCurX, (Coord)(gCurY - 3), gCurX, (Coord)(gCurY + 3));
+        }
     }
+
+    if (gColorScreen) {
+        WinSetForeColor(oldFore);
+    }
+    WinSetClip(&oldClip);
 }
 
 /* Lat/lon + UTC time lines -- only meaningful once a fetch has ever
@@ -575,6 +674,7 @@ UInt32 PilotMain(UInt16 cmd, MemPtr cmdPBP, UInt16 launchFlags)
         return 0;
     }
 
+    InitScreenMode();
     FrmGotoForm(MainForm);
 
     do {
@@ -613,5 +713,6 @@ UInt32 PilotMain(UInt16 cmd, MemPtr cmdPBP, UInt16 launchFlags)
     }
 
     FrmCloseAllForms();
+    RestoreScreenMode();
     return 0;
 }

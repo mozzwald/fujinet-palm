@@ -2,6 +2,7 @@
  * isstracker.c and isstracker.rcp. */
 
 #define MapBitmap            1020  /* top-level BITMAP resource (map.bmp), NOT inside any FORM -- draw it manually with DmGetResource(bitmapRsc, MapBitmap) + WinDrawBitmap */
+#define ColorMapBitmap       1021  /* 8-bit color version of the same map */
 
 #define MainForm             1000
 #define RefreshButton        1010
