@@ -21,3 +21,8 @@ bin.stamp
 /tools/palm-sync/
 /palm/apps/nettest/nettest
 /palm/netshim/fnnetlib
+
+/palm/apps/visorbus/visorbus
+*.rom
+
+__pycache__/

@@ -1,0 +1,3 @@
+# Extend the existing image without changing legacy Palm applications.
+FROM fujinet-palm-toolchain
+RUN apt-get update && apt-get install -y --no-install-recommends g++-multilib && rm -rf /var/lib/apt/lists/*

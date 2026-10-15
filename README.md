@@ -235,3 +235,9 @@ console runs at 460800 baud. When an app opens the link it logs
   rules a client must follow.
 - [docs/emulator-testing.md](docs/emulator-testing.md): the emulator setup in
   detail.
+
+## NIO Springboard bring-up
+
+The independent [Visor Bus Test](palm/apps/visorbus/README.md) builds a Palm OS
+3.5 test PRC and Springboard ROM for the RP2350/NIO prototype. It does not use
+the legacy serial/NetLib implementation above.
