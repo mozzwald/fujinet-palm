@@ -6,8 +6,8 @@ MAKEROM = ../../../tools/makerom/build/Palm-MakeROM
 
 all: visorbus.prc
 
-visorbus: visorbus.c visorbus_rsc.h hs_card.h
-	$(CC) $(CFLAGS) -o $@ visorbus.c
+visorbus: visorbus.c reset_test.c reset_test.h read_test.c read_test.h visorbus_rsc.h hs_card.h
+	$(CC) $(CFLAGS) -o $@ visorbus.c reset_test.c read_test.c
 
 bin.stamp: visorbus.rcp visorbus_rsc.h
 	pilrc -q visorbus.rcp
@@ -32,6 +32,21 @@ build/visorbus.rom: visorbus.prc $(MAKEROM) ../../../tools/verify-springboard-ro
 
 clean:
 	rm -f visorbus visorbus.prc *.bin bin.stamp
-	rm -rf build
+	rm -rf build tests/build
 
 .PHONY: all rom clean
+
+HOST_CC ?= cc
+check: tests/build/test_reset tests/build/test_read
+	./tests/build/test_reset
+	./tests/build/test_read
+
+tests/build/test_reset: tests/test_reset.c reset_test.c reset_test.h
+	mkdir -p tests/build
+	$(HOST_CC) -std=c99 -Wall -Wextra -Werror -I. tests/test_reset.c reset_test.c -o $@
+
+.PHONY: check
+
+tests/build/test_read: tests/test_read.c read_test.c read_test.h reset_test.h
+	mkdir -p tests/build
+	$(HOST_CC) -std=c99 -Wall -Wextra -Werror -I. tests/test_read.c read_test.c -o $@

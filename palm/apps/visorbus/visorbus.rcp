@@ -2,8 +2,28 @@
 FORM ID MainForm AT (0 0 160 160)
 NOFRAME
 BEGIN
-    TITLE "Visor Bus Test 0.1"
-    BUTTON "Inspect" ID InspectButton AT (5 142 68 14)
-    BUTTON "Pattern" ID PatternButton AT (83 142 70 14)
+    TITLE "Visor Bus Test 0.3"
+    BUTTON "Inspect" ID InspectButton AT (2 142 40 14)
+    BUTTON "Next" ID NextButton AT (44 142 26 14)
+    BUTTON "Pulse" ID PulseButton AT (100 142 28 14)
+    BUTTON "Pat" ID PatternButton AT (130 142 28 14)
+    BUTTON "Read" ID ReadButton AT (72 142 26 14)
 END
-VERSION ID 1 "0.1.0"
+ALERT ID ResetConfirmAlert
+CONFIRMATION
+DEFAULTBUTTON 0
+BEGIN
+    TITLE "Module RESET only"
+    MESSAGE "Pulse the selected module RESET for 250 ms? No direct memory reads."
+    BUTTONS "Cancel" "Pulse"
+END
+VERSION ID 1 "0.3.0"
+
+ALERT ID ReadConfirmAlert
+CONFIRMATION
+DEFAULTBUTTON 0
+BEGIN
+    TITLE "Read 8 CS0 words"
+    MESSAGE "Keep the module seated and arm RP capture first. Read 16 bytes from the reported CS0 base? No writes or RESET changes."
+    BUTTONS "Cancel" "Read"
+END
