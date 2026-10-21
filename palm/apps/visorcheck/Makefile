@@ -1,0 +1,50 @@
+.DELETE_ON_ERROR:
+CC = m68k-palmos-gcc
+CFLAGS = -O2 -Wall -palmos3.5 -I../visorbus -Ibuild
+PYTHON = python3
+HOST_CC ?= cc
+
+all: visorcheck.prc
+
+build/expected_rom.h: ../visorbus/build/visorbus.rom ../visorbus/build/visorbus.json ../../../tools/rom-check-info.py
+	mkdir -p build
+	$(PYTHON) ../../../tools/rom-check-info.py ../visorbus/build/visorbus.rom ../visorbus/build/visorbus.json $@
+
+visorcheck: result_codec.c result_codec.h result_store.c result_store.h visorcheck.c timed_read.c timed_read.h image_read.c image_read.h ../visorbus/read_test.c ../visorbus/read_test.h ../visorbus/hs_card.h build/expected_rom.h
+	$(CC) $(CFLAGS) -o $@ visorcheck.c result_codec.c result_store.c timed_read.c image_read.c ../visorbus/read_test.c
+
+bin.stamp: visorcheck.rcp
+	pilrc -q visorcheck.rcp
+	touch $@
+
+visorcheck.prc: visorcheck visorcheck.def bin.stamp
+	build-prc -o $@ visorcheck.def visorcheck *.bin
+	$(PYTHON) -c 'from pathlib import Path; p=Path("$@"); b=bytearray(p.read_bytes()); b[36:48]=bytes(12); p.write_bytes(b)'
+
+check: tests/build/test_image tests/build/test_timing tests/build/test_codec tests/build/test_store
+	./tests/build/test_image
+	./tests/build/test_timing
+	./tests/build/test_codec
+	./tests/build/test_store
+
+tests/build/test_image: tests/test_image.c image_read.c image_read.h ../visorbus/read_test.c ../visorbus/read_test.h
+	mkdir -p tests/build
+	$(HOST_CC) -std=c99 -Wall -Wextra -Werror -I. -I../visorbus tests/test_image.c image_read.c ../visorbus/read_test.c -o $@
+
+clean:
+	rm -f visorcheck visorcheck.prc *.bin bin.stamp
+	rm -rf build tests/build
+
+.PHONY: all check clean
+
+tests/build/test_timing: tests/test_timing.c timed_read.c timed_read.h image_read.c image_read.h ../visorbus/read_test.c ../visorbus/read_test.h
+	mkdir -p tests/build
+	$(HOST_CC) -std=c99 -Wall -Wextra -Werror -I. -I../visorbus tests/test_timing.c timed_read.c image_read.c ../visorbus/read_test.c -o $@
+
+tests/build/test_codec: tests/test_codec.c result_codec.c result_codec.h image_read.c ../visorbus/read_test.c
+	mkdir -p tests/build
+	$(HOST_CC) -std=c99 -Wall -Wextra -Werror -I. -I../visorbus tests/test_codec.c result_codec.c image_read.c ../visorbus/read_test.c -o $@
+
+tests/build/test_store: tests/test_store.c tests/mock/PalmOS.h result_store.c result_store.h result_codec.c result_codec.h image_read.c ../visorbus/read_test.c
+	mkdir -p tests/build
+	$(HOST_CC) -std=c99 -Wall -Wextra -Werror -Wno-multichar -Itests/mock -I. -I../visorbus tests/test_store.c result_store.c result_codec.c image_read.c ../visorbus/read_test.c -o $@

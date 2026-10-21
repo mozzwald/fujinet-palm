@@ -26,3 +26,5 @@ bin.stamp
 *.rom
 
 __pycache__/
+
+/palm/apps/visorcheck/visorcheck
