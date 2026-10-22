@@ -1,19 +1,22 @@
 FORM ID 1000 AT (0 0 160 160)
 NOFRAME
 BEGIN
-    TITLE "Visor ROM Check 0.4.1"
+    TITLE "Visor ROM Check 0.5.0"
     BUTTON "Run" ID 1001 AT (2 128 36 14)
     BUTTON "Pass" ID 1004 AT (40 128 36 14)
     BUTTON "Fail" ID 1005 AT (78 128 36 14)
     BUTTON "Cancel" ID 1002 AT (116 128 42 14)
-    BUTTON "Details" ID 1003 AT (52 144 56 14)
+    BUTTON "ROM64" ID 1008 AT (2 144 38 14)
+    BUTTON "Zero" ID 1006 AT (42 144 34 14)
+    BUTTON "Ones" ID 1007 AT (78 144 34 14)
+    BUTTON "Details" ID 1003 AT (114 144 44 14)
 END
 ALERT ID 1100
 CONFIRMATION
 DEFAULTBUTTON 0
 BEGIN
-    TITLE "Full CS0 readback"
-    MESSAGE "Keep module seated. Send b to arm RP, confirm stopped=0, then read the entire test ROM? No writes or RESET."
+    TITLE "CS0 pattern readback"
+    MESSAGE "Keep module seated. Wait for the matching host-ready cue, then read the selected pattern? No timing changes, writes or RESET."
     BUTTONS "Cancel" "Read"
 END
 ALERT ID 1102
@@ -23,4 +26,4 @@ BEGIN
     MESSAGE "Tests blocked. Original slot timing could not be verified restored, or an unfinished timing journal exists. Keep module seated, stop RP with x, record Details timing page, and request recovery instructions."
     BUTTONS "OK"
 END
-VERSION ID 1 "0.4.1"
+VERSION ID 1 "0.5.0"

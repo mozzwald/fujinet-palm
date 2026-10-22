@@ -40,7 +40,8 @@ Err vc_store_append(const struct vc_result *r, const unsigned char *actual,
   { Err close_error=DmCloseDatabase(db); if(!error) error=close_error; }
   return error;
 }
-Err vc_store_begin(struct vc_result *r) {
+Err vc_store_begin_reference(struct vc_result *r, unsigned long reference_size,
+                             unsigned long reference_crc) {
   LocalID id=DmFindDatabase(0,"VisorCheckControl");
   DmOpenRef db; MemHandle h; const unsigned char *bytes;
   unsigned char saved[20], verify[20];
@@ -54,7 +55,7 @@ Err vc_store_begin(struct vc_result *r) {
   if(!h) { DmCloseDatabase(db); return storeBadConfig; }
   bytes=MemHandleLock(h);
   if(!bytes || !vc_config(bytes,MemHandleSize(h),r->session,r->sha,
-                         r->expected_size,r->expected_crc)) {
+                         reference_size,reference_crc)) {
     if(bytes) MemHandleUnlock(h);
     DmCloseDatabase(db); return storeBadConfig;
   }
@@ -70,4 +71,8 @@ Err vc_store_begin(struct vc_result *r) {
       size!=sizeof(verify) || memcmp(saved,verify,sizeof(saved))) return storeSequence;
   r->sequence=sequence+1;
   return vc_store_append(r,0,0);
+}
+
+Err vc_store_begin(struct vc_result *r) {
+  return vc_store_begin_reference(r, r->expected_size, r->expected_crc);
 }

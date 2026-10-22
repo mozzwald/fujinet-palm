@@ -3,7 +3,7 @@
 This is bring-up tooling, not a new FujiBus feature. `prism_collect.py` uses
 Python's standard library, serial palm-sync, and the existing RP2350 USB CDC
 debug console. Legacy pilot-link support remains available explicitly. The RP firmware, ROM image and bus timing are unchanged.
-Visor ROM Check **0.4.x** must be installed with its session control database.
+Visor ROM Check **0.4.x or0.5.0** must be installed with its session control database.
 It offers **Run** (normal timing), **Pass** and **Fail** (synthetic, no bus access),
 Cancel and Details. The 390ns experiment is unavailable in this collection build;
 the 0.3 fallback remains separate. Do not rebuild or flash the module ROM.
@@ -190,3 +190,50 @@ larger images require a reviewed chunked format, not silent truncation.
 A busy console or failed identity preflight does not consume a pending Palm run;
 its attempt logs are kept separately. Once an arm command may have been sent,
 the pending run remains until validated retrieval or explicit session recovery.
+
+## Latency/constant diagnostic (checker0.5.0)
+
+The separate RP `springboard_rom_latency.uf2` uses the same150MHz, GPIO/pad setup
+and guard/release program. It supports CPU ROM-prefix, CPU constant and PIO-only
+constant responses. PIO-only means no CPU-generated TX reply; CPU still counts,
+drains RX and acknowledges the already-released IRQ park. Marker modes select
+existing-instruction side-set for request, reply, preload or drive; they do not
+add PIO cycles. See the bridge's LATENCY_TEST.md for exact stages and safety
+limits, including the known rapid-deselect blind interval.
+
+Use an existing verified session, **without setup or control reinstall**. First
+install only the new PRC with serial palm-sync (close the app to launcher), then
+require the0.5.0 title. The original ROM SHA/config CRC remains the session
+identity. Result kinds4/5/6 select a128-byte zero/ones/ROM-prefix payload; their
+expected CRC and mismatch values are independently derived by the collector.
+Reference CRC/SHA still identify the original ROM. STARTED and final records
+carry the same test metadata. Wire envelope remainsVCR1; app_version0x500.
+Old0x400/0x401 records and earlier sequence numbers remain valid.
+
+Individual, host-cued commands from fujinet-palm (never run as an unattended batch):
+
+```sh
+./tools/prism_collect.py run /path/to/session --kind rom-prefix
+./tools/prism_collect.py run /path/to/session --kind constant-zero --responder cpu
+./tools/prism_collect.py run /path/to/session --kind constant-zero --responder pio
+./tools/prism_collect.py run /path/to/session --kind constant-ones --responder cpu
+./tools/prism_collect.py run /path/to/session --kind constant-ones --responder pio
+./tools/prism_collect.py run /path/to/session --kind rom-prefix --marker request
+./tools/prism_collect.py run /path/to/session --kind rom-prefix --marker reply
+./tools/prism_collect.py run /path/to/session --kind rom-prefix --marker preload
+```
+
+Each reads64 guarded words at offsets0..126; at the cue use ROM64,Zero orOnes,
+then Read. Wait tone/save and serial HotSync. The collector rejects baseline
+firmware for these tests and rejects latency firmware for ordinary full-ROM run.
+It selects and verifies response/marker/64-word budget before reserving/arming,
+and saves rp-config.json beside RP association/counters. PIO response requires
+posted0,CPU response posted64; both require requested/completed/enabled64 and
+zero anomalies. Missing/wrong mode metadata cannot produce a complete PASS.
+Transfer failure keeps the sequence pending; collect retries without a new read.
+
+Select only one experimental variable at a time. Within the same diagnostic
+binary/probe pair, compare CPU0000 -> PIO0000 -> CPU0000, then change payload
+and compare CPUFFFF -> PIOFFFF -> CPUFFFF. Keep markerdrive throughout those
+comparisons. Profile request/reply/preload separately with fixed CPU-ROM prefix.
+No clock, drive-strength, synchronization bypass or Palm timing changes.

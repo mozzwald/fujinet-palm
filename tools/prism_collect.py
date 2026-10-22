@@ -23,7 +23,18 @@ APP = ROOT / 'palm/apps/visorcheck'
 DEFAULT_ROM = ROOT / 'palm/apps/visorbus/build/visorbus.rom'
 DB = 'VisorCheckResults'
 HEADER = 144
-KIND = {'rom': 1, 'synthetic-pass': 2, 'synthetic-fail': 3}
+KIND = {'rom': 1, 'synthetic-pass': 2, 'synthetic-fail': 3,
+        'constant-zero': 4, 'constant-ones': 5, 'rom-prefix': 6}
+BUS_KINDS = (1, 4, 5, 6)
+SHORT_BYTES = 128
+MARKERS = ('drive', 'request', 'reply', 'preload')
+
+def expected_payload(rom, kind):
+    if kind in (4, 5, 6):
+        if len(rom) < SHORT_BYTES:
+            raise CollectionError('reference too short for latency diagnostic')
+        return bytes([255 if kind == 5 else 0]) * SHORT_BYTES if kind != 6 else rom[:SHORT_BYTES]
+    return rom
 STATUS = {0: 'INCOMPLETE', 1: 'PASS', 2: 'FAIL', 3: 'INCOMPLETE', 4: 'INCOMPLETE'}
 FIELDS = ('sequence kind status expected_size expected_crc reference_crc completed crc '
           'mismatch_count reason error original requested applied restored setup_error '
@@ -106,17 +117,18 @@ def config_record(session, rom):
 
 
 def fixture_record(session, rom, sequence, kind, status, actual=b''):
-    mismatches = [(i, int.from_bytes(rom[i:i+2], 'big'),
+    expected_rom = expected_payload(rom, kind)
+    mismatches = [(i, int.from_bytes(expected_rom[i:i+2], 'big'),
                    int.from_bytes(actual[i:i+2], 'big'))
-                  for i in range(0, len(actual), 2) if rom[i:i+2] != actual[i:i+2]]
+                  for i in range(0, len(actual), 2) if expected_rom[i:i+2] != actual[i:i+2]]
     header = bytearray(HEADER)
     header[:8] = b'VCR1' + struct.pack('>I', 1)
     header[8:24] = bytes.fromhex(session)
     header[24:56] = hashlib.sha256(rom).digest()
-    values = [sequence, kind, status, len(rom), crc(rom), crc(rom), len(actual),
+    values = [sequence, kind, status, len(expected_rom), crc(expected_rom), crc(rom), len(actual),
               crc(actual), len(mismatches), 0, 0, 0, 0, 0, 0, 0, 0, 1,
-              0 if status == 0 else 2, 0x400]
-    if kind == 1 and status != 0:
+              0 if status == 0 else 2, 0x500 if kind >= 4 else 0x400]
+    if kind in BUS_KINDS and status != 0:
         values[11] = values[13] = 330
     struct.pack_into('>20I', header, 56, *values)
     length = HEADER + len(actual) + 8 * len(mismatches) + 4
@@ -134,10 +146,12 @@ def decode_record(raw, rom):
     d = dict(zip(FIELDS, struct.unpack_from('>20I', raw, 56)))
     d['session'], d['rom_sha256'] = raw[8:24].hex(), raw[24:56].hex()
     if (not d['sequence'] or d['kind'] not in KIND.values() or d['status'] not in STATUS or
-        d['app_version'] not in (0x400, 0x401) or d['expected_size'] > 12000 or d['expected_size'] & 1 or
+        d['app_version'] not in (0x400, 0x401, 0x500) or d['expected_size'] > 12000 or d['expected_size'] & 1 or
         not d['expected_size'] or d['completed'] > d['expected_size'] or d['completed'] & 1 or
         len(raw) != HEADER + d['completed'] + 8*d['mismatch_count'] + 4):
         raise CollectionError('unsupported/inconsistent result fields')
+    if d['kind'] >= 4 and d['app_version'] != 0x500:
+        raise CollectionError('latency test requires checker0.5.0')
     actual = raw[HEADER:HEADER+d['completed']]
     if crc(actual) != d['crc']:
         raise CollectionError('captured bytes disagree with bus CRC')
@@ -146,15 +160,16 @@ def decode_record(raw, rom):
     # Old sessions may have a different ROM. Validate their envelope but never
     # use them as current evidence. Current-session verification follows below.
     if d['rom_sha256'] == hashlib.sha256(rom).hexdigest():
-        if d['expected_size'] != len(rom) or d['expected_crc'] != crc(rom) or d['reference_crc'] != crc(rom):
+        expected_rom = expected_payload(rom, d['kind'])
+        if d['expected_size'] != len(expected_rom) or d['expected_crc'] != crc(expected_rom) or d['reference_crc'] != crc(rom):
             raise CollectionError('ROM/reference identity mismatch')
-        expected = [dict(offset=i, expected=int.from_bytes(rom[i:i+2], 'big'),
+        expected = [dict(offset=i, expected=int.from_bytes(expected_rom[i:i+2], 'big'),
                          actual=int.from_bytes(actual[i:i+2], 'big'))
-                    for i in range(0, len(actual), 2) if actual[i:i+2] != rom[i:i+2]]
+                    for i in range(0, len(actual), 2) if actual[i:i+2] != expected_rom[i:i+2]]
         if expected != d['mismatches']:
             raise CollectionError('missing/incorrect mismatch records')
-        clean = (d['completed'] == len(rom) and not expected and d['crc'] == crc(rom))
-        if d['status'] in (1, 2) and (d['completed'] != len(rom) or (d['status'] == 1) != clean):
+        clean = (d['completed'] == len(expected_rom) and not expected and d['crc'] == crc(expected_rom))
+        if d['status'] in (1, 2) and (d['completed'] != len(expected_rom) or (d['status'] == 1) != clean):
             raise CollectionError('invalid PASS/FAIL claim')
     if d['status'] in (1, 2) and d['rom_sha256'] == hashlib.sha256(rom).hexdigest():
         if d['kind'] == 2 and actual != rom:
@@ -165,8 +180,8 @@ def decode_record(raw, rom):
         raise CollectionError('unexpected timing change/error in automation result')
     if d['status'] in (1, 2) and (d['reason'] or d['error']):
         raise CollectionError('completed result contains an access error')
-    if d['status'] in (1, 2) and ((d['kind'] == 1 and (not d['original'] or d['applied'] != d['original'])) or
-                                  (d['kind'] != 1 and (d['original'] or d['applied']))):
+    if d['status'] in (1, 2) and ((d['kind'] in BUS_KINDS and (not d['original'] or d['applied'] != d['original'])) or
+                                  (d['kind'] not in BUS_KINDS and (d['original'] or d['applied']))):
         raise CollectionError('unexpected normal/synthetic timing metadata')
     if d['status'] == 0 and (d['completed'] or d['mismatch_count'] or d['ended']):
         raise CollectionError('invalid STARTED marker')
@@ -333,7 +348,7 @@ class RP:
             time.sleep(.1)
         raise CollectionError('RP stop not confirmed; do not touch/rearm hardware')
 
-    def identify(self, rom):
+    def _identify(self, rom, banner):
         self.stop()
         # DTR re-announces the existing core-0 console banner; not a chip reset.
         try:
@@ -343,11 +358,28 @@ class RP:
         except OSError as exc:
             raise CollectionError('cannot request firmware identity via CDC DTR') from exc
         text = self.read(1)
-        banner = 'FujiSpring EXPERIMENTAL CS0 ROM / bounded reads / 150MHz'
         match = re.search(r'ROM=(\d+) CRC32=([0-9a-fA-F]{8})', text)
         if banner not in text or not match or (int(match[1]),int(match[2],16)) != (len(rom),crc(rom)):
             raise CollectionError('RP firmware/ROM identity not verified; no test armed')
         return self.status()
+
+    def identify(self, rom):
+        return self._identify(rom, 'FujiSpring EXPERIMENTAL CS0 ROM / bounded reads / 150MHz')
+
+    def identify_latency(self, rom, response, marker):
+        self._identify(rom, 'FujiSpring LATENCY DIAGNOSTIC / bounded reads / 150MHz')
+        commands = {'cpu-rom': 'R', 'cpu-zero': 'Z', 'cpu-ones': 'F',
+                    'pio-zero': 'z', 'pio-ones': 'f'}
+        if response not in commands or marker not in MARKERS:
+            raise CollectionError('unsupported latency configuration')
+        self.send(commands[response]); self.read(.1)
+        self.send(str(MARKERS.index(marker))); self.read(.1)
+        self.send('q')
+        text = self.read(.3)
+        match = re.search(r'LATENCY response=([a-z-]+) marker=([a-z-]+) words=(\d+)', text)
+        if not match or match.groups() != (response, marker, str(SHORT_BYTES//2)):
+            raise CollectionError('latency response/profile readback mismatch; no test armed')
+        return self.status(), dict(response=response, marker=marker, words=SHORT_BYTES//2)
 
     def arm(self, previous, words):
         if not (previous['rom_ready'] and previous['ready'] and previous['stopped'] and not previous['arm_pending']):
@@ -419,19 +451,29 @@ def load_session(directory):
 def report(directory, d, rp=None):
     result = dict(d)
     result['rp'] = rp
-    if d['kind'] == 1:
+    if d['kind'] in BUS_KINDS:
         if not rp or not d.get('rp_armed'):
             result['result'] = 'COLLECTION ERROR'
             result['collection_error'] = 'ROM evidence lacks its paired RP arming/final diagnostics'
         else:
             armed = d['rp_armed']
+            config = d.get('rp_config')
+            if d['kind'] >= 4:
+                allowed = {4: ('cpu-zero', 'pio-zero'), 5: ('cpu-ones', 'pio-ones'), 6: ('cpu-rom',)}[d['kind']]
+                if (not config or config.get('response') not in allowed or
+                        config.get('marker') not in MARKERS or config.get('words') != SHORT_BYTES//2):
+                    result['result'] = 'COLLECTION ERROR'
+                    result['collection_error'] = 'missing or mismatched latency mode evidence'
+            wanted_posted = 0 if config and config.get('response','').startswith('pio-') else d['expected_size']//2
+            result['rp_address_validation'] = ('not sampled in PIO constant mode' if config and config.get('response','').startswith('pio-') else 'CPU sequential address check')
             if (rp['run'] != armed['run'] or rp['limit'] != d['expected_size']//2 or
                 not rp['stopped'] or rp['arm_pending']):
                 result['result'] = 'COLLECTION ERROR'
                 result['collection_error'] = 'RP identity/budget/stop mismatch'
-            elif any(rp[k] != d['expected_size']//2 for k in ('requests','posted','completed','enabled')) or any(rp[k] for k in ('not_enabled','address_errors','anomalies')):
+            elif rp['posted'] != wanted_posted or any(rp[k] != d['expected_size']//2 for k in ('requests','completed','enabled')) or any(rp[k] for k in ('not_enabled','address_errors','anomalies')):
                 result['result'] = 'INCOMPLETE' if rp['completed'] < d['expected_size']//2 else 'COLLECTION ERROR'
                 result['collection_error'] = 'RP counters/anomalies do not qualify the requested complete ROM run'
+    result['qualification'] = 'Readback only; no ROM execution, sampling margin or rapid-cycle qualification'
     result['test_kind'] = next(k for k,v in KIND.items() if v==d['kind'])
     atomic_json(directory/'report.json',result)
     lines = [f"# {result['result']} — {result['test_kind']}", '',
@@ -440,6 +482,10 @@ def report(directory, d, rp=None):
              f"Bytes: {d['completed']}/{d['expected_size']}; mismatches: {d['mismatch_count']}",
              f"Timing ns: original={d['original']}, applied={d['applied']}; no timing changes requested.",
              '', '| Offset | Expected | Actual |', '| --- | --- | --- |']
+    if d.get('rp_config'):
+        config = d['rp_config']
+        lines[7:7] = [f"Responder: {config['response']}; marker: {config['marker']}; budget: {config['words']} words.",
+                      f"Address validation: {result.get('rp_address_validation', 'unqualified')}."]
     lines += [f"| {m['offset']:04X} | {m['expected']:04X} | {m['actual']:04X} |" for m in d['mismatches']]
     if result.get('collection_error'):
         lines += ['',result['collection_error']]
@@ -467,6 +513,8 @@ def collect(directory, state, rom, timeout):
     if (output/'rp-final.json').exists():
         rp=json.loads((output/'rp-final.json').read_text())
         d['rp_armed']=json.loads((output/'rp-armed.json').read_text())
+        if (output/'rp-config.json').exists():
+            d['rp_config']=json.loads((output/'rp-config.json').read_text())
     result = report(output,d,rp)
     if result['result'] == 'COLLECTION ERROR':
         raise CollectionError(result['collection_error'])
@@ -523,7 +571,7 @@ def execute(args):
             return collect(directory,state,rom,args.timeout)
         if not state['transport_verified']:
             raise CollectionError('first verify pilot-xfer retrieval with probe')
-        if args.kind == 'rom':
+        if KIND[args.kind] in BUS_KINDS:
             validated = state.get('validation',[])
             if len(validated) < 5 or not {2,3} <= {v['kind'] for v in validated}:
                 raise CollectionError('first collect at least five synthetic runs, including PASS and FAIL')
@@ -536,15 +584,27 @@ def execute(args):
         atomic_json(output/'host-run.json',dict(session=state['session'],sequence=seq,
                     kind=args.kind,started_utc=time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime())))
         try:
-            if args.kind=='rom':
+            if KIND[args.kind] in BUS_KINDS:
                 rp=RP(rp_port(args.rp),output/'rp-console.log')
-                before=rp.identify(rom)
+                if KIND[args.kind] >= 4:
+                    responder = getattr(args, 'responder', 'cpu')
+                    if args.kind == 'rom-prefix' and responder != 'cpu':
+                        raise CollectionError('ROM prefix requires CPU responder')
+                    suffix = {'constant-zero': 'zero', 'constant-ones': 'ones', 'rom-prefix': 'rom'}[args.kind]
+                    response = responder + '-' + suffix
+                    before, config = rp.identify_latency(rom, response, getattr(args, 'marker', 'drive'))
+                    atomic_json(output/'rp-config.json',config)
+                else:
+                    if getattr(args, 'responder', 'cpu') != 'cpu' or getattr(args, 'marker', 'drive') != 'drive':
+                        raise CollectionError('profiles require a short latency test kind')
+                    before=rp.identify(rom)
                 atomic_json(output/'rp-before.json',before)
                 state['pending']=pending
                 atomic_json(directory/'session.json',state)
-                armed=rp.arm(before,len(rom)//2)
+                armed=rp.arm(before,len(expected_payload(rom, KIND[args.kind]))//2)
                 atomic_json(output/'rp-armed.json',armed)
-                print(f"RP armed run={armed['run']} limit={armed['limit']}. Tap Run, then Read on Prism 0.4.x.",flush=True)
+                button = {'rom': 'Run', 'rom-prefix': 'ROM64', 'constant-zero': 'Zero', 'constant-ones': 'Ones'}[args.kind]
+                print(f"RP armed run={armed['run']} limit={armed['limit']}. Tap {button}, then Read on Prism.",flush=True)
                 final=rp.wait(armed,args.read_timeout)
                 atomic_json(output/'rp-final.json',final)
             else:
@@ -578,6 +638,8 @@ def main(argv=None):
             child.add_argument('--transport',choices=('pilot-link','palm-sync'))
         if name=='run':
             child.add_argument('--kind',choices=KIND,default='rom')
+            child.add_argument('--responder', choices=('cpu', 'pio'), default='cpu')
+            child.add_argument('--marker', choices=MARKERS, default='drive')
             child.add_argument('--rp');child.add_argument('--read-timeout',type=float,default=180)
     args=parser.parse_args(argv)
     try:

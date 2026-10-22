@@ -10,8 +10,8 @@ build/expected_rom.h: ../visorbus/build/visorbus.rom ../visorbus/build/visorbus.
 	mkdir -p build
 	$(PYTHON) ../../../tools/rom-check-info.py ../visorbus/build/visorbus.rom ../visorbus/build/visorbus.json $@
 
-visorcheck: result_codec.c result_codec.h result_store.c result_store.h visorcheck.c timed_read.c timed_read.h image_read.c image_read.h ../visorbus/read_test.c ../visorbus/read_test.h ../visorbus/hs_card.h build/expected_rom.h
-	$(CC) $(CFLAGS) -o $@ visorcheck.c result_codec.c result_store.c timed_read.c image_read.c ../visorbus/read_test.c
+visorcheck: diagnostic.c diagnostic.h result_codec.c result_codec.h result_store.c result_store.h visorcheck.c timed_read.c timed_read.h image_read.c image_read.h ../visorbus/read_test.c ../visorbus/read_test.h ../visorbus/hs_card.h build/expected_rom.h
+	$(CC) $(CFLAGS) -o $@ visorcheck.c diagnostic.c result_codec.c result_store.c timed_read.c image_read.c ../visorbus/read_test.c
 
 bin.stamp: visorcheck.rcp
 	pilrc -q visorcheck.rcp
@@ -21,7 +21,8 @@ visorcheck.prc: visorcheck visorcheck.def bin.stamp
 	build-prc -o $@ visorcheck.def visorcheck *.bin
 	$(PYTHON) -c 'from pathlib import Path; p=Path("$@"); b=bytearray(p.read_bytes()); b[36:48]=bytes(12); p.write_bytes(b)'
 
-check: tests/build/test_image tests/build/test_timing tests/build/test_codec tests/build/test_store
+check: tests/build/test_diagnostic tests/build/test_image tests/build/test_timing tests/build/test_codec tests/build/test_store
+	./tests/build/test_diagnostic
 	./tests/build/test_image
 	./tests/build/test_timing
 	./tests/build/test_codec
@@ -48,3 +49,7 @@ tests/build/test_codec: tests/test_codec.c result_codec.c result_codec.h image_r
 tests/build/test_store: tests/test_store.c tests/mock/PalmOS.h result_store.c result_store.h result_codec.c result_codec.h image_read.c ../visorbus/read_test.c
 	mkdir -p tests/build
 	$(HOST_CC) -std=c99 -Wall -Wextra -Werror -Wno-multichar -Itests/mock -I. -I../visorbus tests/test_store.c result_store.c result_codec.c image_read.c ../visorbus/read_test.c -o $@
+
+tests/build/test_diagnostic: tests/test_diagnostic.c diagnostic.c diagnostic.h result_codec.h
+	mkdir -p tests/build
+	$(HOST_CC) -std=c99 -Wall -Wextra -Werror -I. tests/test_diagnostic.c diagnostic.c -o $@

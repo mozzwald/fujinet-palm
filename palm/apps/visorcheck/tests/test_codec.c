@@ -44,5 +44,16 @@ int main(int argc,char **argv) {
   assert(vc_config(config,68,session,sha,256,r.expected_crc));
   assert(!vc_config(config,67,session,sha,256,r.expected_crc));
   config[64]^=1;assert(!vc_config(config,68,session,sha,256,r.expected_crc));
+  /* Cross-language records for the new short physical tests retain the
+   * original256-byte ROM SHA/reference CRC but expect a128-byte payload. */
+  r.completed=r.expected_size=128;r.original=r.applied=330;r.requested=r.restored=0;
+  r.status=VC_PASS;r.started=1;r.ended=2;
+  for(i=4;i<=6;++i) {
+    unsigned j;char name[16];r.kind=i;
+    for(j=0;j<128;++j)expected[j]=actual[j]=i==4?0:i==5?255:(unsigned char)j;
+    r.expected_crc=r.crc=visor_image_local_crc(actual,128);
+    n=vc_encode(output,sizeof(output),&r,actual,expected);assert(n==276);
+    sprintf(name,"constant%u",i);if(argc==2)save(argv[1],name,n);
+  }
   puts("Result codec: explicit endian layout, full mismatches, partial capture, bounds and config integrity PASS");return 0;
 }

@@ -5,12 +5,14 @@
 #include "timed_read.h"
 #include "expected_rom.h"
 #include "result_store.h"
+#include "diagnostic.h"
 #if EXPECTED_ROM_SIZE > VC_MAX_IMAGE
 #error Result record capacity must be reviewed for larger images
 #endif
 
 enum { MainForm = 1000, CheckButton = 1001, CancelButton = 1002,
        DetailsButton = 1003, PassButton = 1004, FailButton = 1005, ConfirmAlert = 1100,
+       ZeroButton = 1006, OnesButton = 1007, PrefixButton = 1008,
        SlowAlert = 1101, RestoreAlert = 1102 };
 static struct visor_timed_read run;
 static unsigned details_page;
@@ -22,6 +24,8 @@ static struct vc_result result;
 static Boolean recording;
 static Err storage_error;
 static const Char *result_message;
+static unsigned char pattern[VC_SHORT_BYTES];
+static const unsigned char *expected_data;
 
 
 static void line(Coord y, const Char *label, UInt32 value) {
@@ -91,7 +95,7 @@ static void finish(unsigned long status) {
     if (result.reason || result.error || result.setup_error || result.restore_error)
       result.status = VC_ERROR;
     result.ended = TimGetSeconds();
-    storage_error = vc_store_append(&result, captured, expected_rom_data);
+    storage_error = vc_store_append(&result, captured, expected_data);
     recording = false;
     /* Notify only after reading and persistence finish, outside the bus path.
      * System sounds honor the user's sound-volume preference. */
@@ -110,9 +114,9 @@ static void draw(const Char *message) {
   RectangleType area;
   RctSetRectangle(&area, 0, 18, 160, 108); WinEraseRectangle(&area, 0);
   WinDrawChars(message, StrLen(message), 4, 22);
-  line(39, "ROM bytes: ", EXPECTED_ROM_SIZE);
+  line(39, "Test bytes: ", result.expected_size ? result.expected_size : EXPECTED_ROM_SIZE);
   line(52, "Read bytes: ", run.image.completed);
-  line(65, "Expected: ", EXPECTED_ROM_CRC);
+  line(65, "Expected: ", result.expected_size ? result.expected_crc : EXPECTED_ROM_CRC);
   line(78, "Bus CRC: ", run.image.crc ^ 0xffffffffUL);
   line(91, "Bad words: ", run.image.mismatch_count);
   line(104, "RAM CRC: ", reference_crc);
@@ -157,11 +161,13 @@ static void details(void) {
 static Boolean begin_result(unsigned long kind) {
   MemSet(&run, sizeof(run), 0);
   MemSet(&result, sizeof(result), 0);
-  result.expected_size = EXPECTED_ROM_SIZE;
-  result.expected_crc = EXPECTED_ROM_CRC;
+  expected_data = vc_expected(kind, expected_rom_data, EXPECTED_ROM_SIZE,
+                             pattern, sizeof(pattern), &result.expected_size);
+  if (!expected_data) { draw("Invalid test reference"); return false; }
+  result.expected_crc = visor_image_local_crc(expected_data, result.expected_size);
   result.reference_crc = reference_crc;
   result.kind = kind; result.started = TimGetSeconds();
-  storage_error = vc_store_begin(&result);
+  storage_error = vc_store_begin_reference(&result, EXPECTED_ROM_SIZE, EXPECTED_ROM_CRC);
   recording = !storage_error;
   details_page = 0;
   if (storage_error) draw("Install session control PDB");
@@ -207,20 +213,25 @@ static Boolean main_event(EventType *e) {
   if (e->eType == ctlSelectEvent &&
       (e->data.ctlSelect.controlID == CheckButton ||
        e->data.ctlSelect.controlID == PassButton ||
-       e->data.ctlSelect.controlID == FailButton)) {
+       e->data.ctlSelect.controlID == FailButton ||
+       e->data.ctlSelect.controlID == ZeroButton ||
+       e->data.ctlSelect.controlID == OnesButton ||
+       e->data.ctlSelect.controlID == PrefixButton)) {
     UInt32 hs;
     if (reading) return true;
     if (run.blocked) { FrmAlert(RestoreAlert); return true; }
     if (reference_crc != EXPECTED_ROM_CRC) { draw("RAM reference CRC FAIL"); return true; }
-    if (e->data.ctlSelect.controlID != CheckButton) {
+    if (e->data.ctlSelect.controlID == PassButton || e->data.ctlSelect.controlID == FailButton) {
       synthetic(e->data.ctlSelect.controlID == FailButton); return true;
     }
     if (FtrGet(VISOR_HS_CREATOR, VISOR_HS_VERSION, &hs)) {
       draw("No Handspring API"); return true;
     }
     if (FrmAlert(ConfirmAlert) != 1) return true;
-    if (!begin_result(VC_ROM)) return true;
-    visor_timed_begin(&run, &timing_ops, EXPECTED_ROM_SIZE, expected_rom_data, 0);
+    if (!begin_result(e->data.ctlSelect.controlID == ZeroButton ? VC_CONST_ZERO :
+          e->data.ctlSelect.controlID == OnesButton ? VC_CONST_ONES :
+          e->data.ctlSelect.controlID == PrefixButton ? VC_ROM_PREFIX : VC_ROM)) return true;
+    visor_timed_begin(&run, &timing_ops, result.expected_size, expected_data, 0);
     reading = run.active;
     if (!reading) finish(VC_ERROR);
     result_message = reading ? "Reading spaced CS0 words" : "Refused; send RP x";
@@ -234,11 +245,11 @@ static Boolean main_event(EventType *e) {
     EvtResetAutoOffTimer();
     if (!run.active) {
       Boolean pass = run.image.completed == run.image.length &&
-          (run.image.crc ^ 0xffffffffUL) == EXPECTED_ROM_CRC && !run.image.mismatch_count;
+          (run.image.crc ^ 0xffffffffUL) == result.expected_crc && !run.image.mismatch_count;
       finish(pass ? VC_PASS : VC_FAIL);
       result_message = run.blocked ? "RESTORE FAIL: blocked" :
           result.status == VC_ERROR ? "Interrupted; send RP x" :
-          pass ? "Full ROM CRC PASS" : "Full ROM CRC FAIL";
+          pass ? "Pattern CRC PASS" : "Pattern CRC FAIL";
       draw(result_message);
     } else if (!(run.image.completed & 127)) draw("Reading spaced CS0 words");
     return true;
@@ -258,6 +269,7 @@ UInt32 PilotMain(UInt16 cmd, MemPtr params, UInt16 flags) {
   (void)params; (void)flags;
   if (cmd != sysAppLaunchCmdNormalLaunch) return 0;
   reading = false;
+  expected_data = expected_rom_data;
   {
     UInt32 pending = 0;
     UInt16 size = sizeof(pending);

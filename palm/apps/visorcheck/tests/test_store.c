@@ -90,6 +90,15 @@ int main(void) {
   config_db.type='WRNG';initialize(&r);assert(vc_store_begin(&r));config_db.type='VCTL';
   result_db.creator='WRNG';initialize(&r);assert(vc_store_begin(&r));result_db.creator='FNVC';
   assert(result_db.count==4);
+  /* New pattern metadata must not replace the original control identity or
+   * reset the existing session sequence. A wrong reference fails closed. */
+  initialize(&r);r.kind=VC_CONST_ONES;r.expected_size=8;r.expected_crc=0x12345678;
+  assert(vc_store_begin_reference(&r,16,0));
+  assert(!vc_store_begin_reference(&r,16,0xecbb4b55UL));
+  assert(r.sequence==5 && result_db.count==5);
+  assert(vc_get32(result_db.records[4].bytes+68)==8);
+  assert(vc_get32(result_db.records[4].bytes+72)==0x12345678);
+  assert(!memcmp(snapshot,result_db.records[0].bytes,148));
   while(result_db.count)DmRemoveRecord(&result_db,(UInt16)(result_db.count-1));
   puts("Palm storage mock: append-only runs, crash markers, low memory, failed/partial writes, journal and ownership failures PASS");return 0;
 }

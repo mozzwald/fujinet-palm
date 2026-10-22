@@ -1,6 +1,16 @@
 # Visor ROM Check — RAM diagnostic
 
-Current build: **0.4.1 automated collection**, normal bus timing only. Install the
+Current build **0.5.0** adds64-word ROM prefix/0000/FFFF diagnostics. The normal
+Run/Pass/Fail functions and all existing session history remain supported. New
+ROM64/Zero/Ones buttons use the same guarded one-word-per-tick reader, unchanged
+wait states and persistent result collection. The matching separate RP latency
+firmware must be selected/armed by the host first; see the latency section in
+[PRISM_AUTOMATION.md](../../../tools/PRISM_AUTOMATION.md). A short pattern PASS
+is not full-ROM verification. Upgrade an existing session's PRC only; retain its
+original control PDB/token, sequence and records.
+
+
+Previous build: **0.4.1 automated collection**, normal bus timing only. Install the
 PRC together with its generated VisorCheckControl PDB. Run performs the existing
 normal read; Pass/Fail generate synthetic results without bus access. All results
 are appended to VisorCheckResults, including full captures and every mismatch.

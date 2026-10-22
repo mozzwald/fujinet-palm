@@ -4,7 +4,7 @@
 #define VC_HEADER 144UL
 #define VC_CONFIG_SIZE 68UL
 #define VC_MAX_IMAGE 12000UL
-#define VC_VERSION 0x00000401UL
+#define VC_VERSION 0x00000500UL
 #define VC_STARTED 0
 #define VC_PASS 1
 #define VC_FAIL 2
@@ -13,6 +13,10 @@
 #define VC_ROM 1
 #define VC_SYNTH_PASS 2
 #define VC_SYNTH_FAIL 3
+#define VC_CONST_ZERO 4
+#define VC_CONST_ONES 5
+#define VC_ROM_PREFIX 6
+#define VC_SHORT_BYTES 128UL
 struct vc_result {
   unsigned char session[16], sha[32];
   unsigned long sequence, kind, status, expected_size, expected_crc, reference_crc;

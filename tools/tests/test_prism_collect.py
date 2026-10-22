@@ -115,6 +115,10 @@ class Records(unittest.TestCase):
                 d=m.decode_record(raw,rom)
                 self.assertEqual(d['status'],status)
                 if name=='fail':self.assertEqual(d['mismatch_count'],128)
+            for kind in (4,5,6):
+                d=m.decode_record((Path(tmp)/f'constant{kind}.bin').read_bytes(),rom)
+                self.assertEqual(d['kind'],kind);self.assertEqual(d['completed'],128)
+                self.assertEqual(d['result'],'PASS')
 
 class Workflow(unittest.TestCase):
     setUp=Records.setUp
@@ -302,5 +306,97 @@ class Workflow(unittest.TestCase):
             with self.assertRaises(m.CollectionError):rp.wait(armed,1)
         with patch.object(rp,'status',return_value=dict(run=1,limit=3624,stopped=0,arm_pending=0)),patch.object(m.time,'sleep'):
             with self.assertRaises(m.CollectionError):rp.wait(armed,.001)
+
+class Latency(unittest.TestCase):
+    setUp=Records.setUp
+    pair=Records.pair
+
+    def test_short_patterns_and_all_mismatches(self):
+        for kind in (4,5,6):
+            payload=m.expected_payload(self.rom,kind)
+            self.assertEqual(len(payload),128)
+            good=m.decode_pdb(m.make_pdb(m.DB,self.pair(payload,1,kind)),self.session,self.rom)[1]
+            self.assertEqual(good['result'],'PASS');self.assertEqual(good['completed'],128)
+            bad=bytes(x^255 for x in payload)
+            d=m.decode_pdb(m.make_pdb(m.DB,self.pair(bad,2,kind)),self.session,self.rom)[1]
+            self.assertEqual(d['mismatch_count'],64)
+            self.assertEqual(d['mismatches'][-1]['offset'],126)
+            self.assertEqual(d['reference_crc'],m.crc(self.rom))
+
+    def test_new_and_old_history_and_metadata_rejection(self):
+        records=self.pair(seq=1)
+        records+=self.pair(m.expected_payload(self.rom,4),1,4,seq=2)
+        self.assertEqual(len(m.decode_pdb(m.make_pdb(m.DB,records),self.session,self.rom)),2)
+        for offset,value in ((132,0x401),(68,7248),(72,0),(76,0)):
+            raw=bytearray(records[-1]);struct.pack_into('>I',raw,offset,value)
+            raw[-4:]=struct.pack('>I',m.crc(raw[:-4]))
+            with self.assertRaises(m.CollectionError):m.decode_record(raw,self.rom)
+
+    def test_response_config_and_posted_evidence(self):
+        for kind in (4,5,6):
+            for response in ({4:('cpu-zero','pio-zero'),5:('cpu-ones','pio-ones'),6:('cpu-rom',)}[kind]):
+                d=m.decode_record(self.pair(m.expected_payload(self.rom,kind),1,kind)[1],self.rom)
+                d['rp_armed']={'run':1,'limit':64}
+                d['rp_config']=dict(response=response,marker='drive',words=64)
+                rp=dict(run=1,limit=64,requests=64,posted=0 if response.startswith('pio') else 64,
+                        completed=64,enabled=64,stopped=1,arm_pending=0,
+                        not_enabled=0,address_errors=0,anomalies=0)
+                with tempfile.TemporaryDirectory() as tmp:
+                    self.assertEqual(m.report(Path(tmp),d,rp)['result'],'PASS')
+                    rp['posted']^=64
+                    self.assertEqual(m.report(Path(tmp),d,rp)['result'],'COLLECTION ERROR')
+                    rp['posted']^=64;del d['rp_config']
+                    self.assertEqual(m.report(Path(tmp),d,rp)['result'],'COLLECTION ERROR')
+                    d['rp_config']=dict(response='wrong',marker='drive',words=64)
+                    self.assertEqual(m.report(Path(tmp),d,rp)['result'],'COLLECTION ERROR')
+
+    def test_mode_profile_identity_readback(self):
+        for response in ('cpu-rom','cpu-zero','cpu-ones','pio-zero','pio-ones'):
+            for marker in m.MARKERS:
+                rp=m.RP.__new__(m.RP);commands=[]
+                def read(seconds):
+                    return f'LATENCY response={response} marker={marker} words=64' if commands[-1]=='q' else ''
+                with patch.object(rp,'_identify') as identity,patch.object(rp,'send',side_effect=commands.append),patch.object(rp,'read',side_effect=read),patch.object(rp,'status',return_value={'stopped':1}):
+                    state,config=rp.identify_latency(self.rom,response,marker)
+                    self.assertEqual(config,dict(response=response,marker=marker,words=64))
+                    identity.assert_called_once_with(self.rom,'FujiSpring LATENCY DIAGNOSTIC / bounded reads / 150MHz')
+                with patch.object(rp,'_identify'),patch.object(rp,'send'),patch.object(rp,'read',return_value='LATENCY response=cpu-rom marker=drive words=3624'):
+                    with self.assertRaises(m.CollectionError):rp.identify_latency(self.rom,response,marker)
+
+    def test_short_workflows_and_hotsync_retry(self):
+        for kind,response in (('constant-zero','cpu'),('constant-zero','pio'),('constant-ones','cpu'),('constant-ones','pio'),('rom-prefix','cpu')):
+            for retry in (False,True):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root=Path(tmp);rom=root/'reference.rom';prc=root/'stub.prc'
+                    rom.write_bytes(self.rom);prc.write_bytes(b'PRC');session=root/'session'
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        self.assertEqual(m.main(['setup',str(session),'--rom',str(rom),'--prc',str(prc)]),0)
+                    state=json.loads((session/'session.json').read_text());state.update(installed=True,transport_verified=True,transport='palm-sync',validation=[{'kind':2},{'kind':3},{'kind':2},{'kind':3},{'kind':2}])
+                    m.atomic_json(session/'session.json',state)
+                    final=dict(run=1,limit=64,requests=64,posted=0 if response=='pio' else 64,completed=64,enabled=64,not_enabled=0,address_errors=0,anomalies=0,stopped=1,arm_pending=0)
+                    before=dict(final,run=0,requests=0,posted=0,completed=0,enabled=0,rom_ready=1,ready=1)
+                    suffix={'constant-zero':'zero','constant-ones':'ones','rom-prefix':'rom'}[kind]
+                    config=dict(response=response+'-'+suffix,marker='reply',words=64)
+                    records=[m.fixture_record(state['session'],self.rom,1,m.KIND[kind],0),m.fixture_record(state['session'],self.rom,1,m.KIND[kind],1,m.expected_payload(self.rom,m.KIND[kind]))]
+                    armed=dict(before,run=1,limit=64,stopped=0)
+                    attempts=[]
+                    def transfer(_session,output,mode,names,timeout,**kwargs):
+                        self.assertEqual(kwargs['transport'],'palm-sync');attempts.append(1)
+                        if retry and len(attempts)==1:raise m.CollectionError('missed HotSync')
+                        (output/(m.DB+'.pdb')).write_bytes(m.make_pdb(m.DB,records))
+                    with patch.object(m,'RP') as cls,patch.object(m,'rp_port',return_value='/fake'),patch.object(m,'transfer',side_effect=transfer),contextlib.redirect_stdout(io.StringIO()),contextlib.redirect_stderr(io.StringIO()):
+                        rp=cls.return_value;rp.identify_latency.return_value=(before,config);rp.arm.return_value=armed;rp.wait.return_value=final;rp.stop.return_value=final
+                        rc=m.main(['run',str(session),'--kind',kind,'--responder',response,'--marker','reply'])
+                        self.assertEqual(rc,2 if retry else 0)
+                        if retry:
+                            self.assertIsNotNone(json.loads((session/'session.json').read_text())['pending'])
+                            self.assertEqual(m.main(['collect',str(session)]),0)
+                        rp.arm.assert_called_once_with(before,64)
+                        rp.identify_latency.assert_called_once_with(self.rom,response+'-'+suffix,'reply')
+                        cls.assert_called_once()
+                    self.assertIsNone(json.loads((session/'session.json').read_text())['pending'])
+                    result=json.loads(next(session.glob('run-*/report.json')).read_text())
+                    self.assertEqual(result['rp_config'],config)
+                    self.assertEqual(result['result'],'PASS')
 
 if __name__=='__main__':unittest.main()
