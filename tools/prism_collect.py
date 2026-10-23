@@ -361,6 +361,7 @@ class RP:
         match = re.search(r'ROM=(\d+) CRC32=([0-9a-fA-F]{8})', text)
         if banner not in text or not match or (int(match[1]),int(match[2],16)) != (len(rom),crc(rom)):
             raise CollectionError('RP firmware/ROM identity not verified; no test armed')
+        self.identity_text = text
         return self.status()
 
     def identify(self, rom):
@@ -381,10 +382,20 @@ class RP:
             raise CollectionError('latency response/profile readback mismatch; no test armed')
         return self.status(), dict(response=response, marker=marker, words=SHORT_BYTES//2)
 
-    def arm(self, previous, words):
+    def identify_latency_full(self, rom, marker):
+        status, config = self.identify_latency(rom, 'cpu-rom', marker)
+        capability = re.search(r'(?:^|\n)ENGINE=rx-first-v2 full_words=(\d+)\r?(?:\n|$)',
+                               getattr(self, 'identity_text', ''))
+        if not capability or int(capability[1]) != len(rom)//2:
+            raise CollectionError('full ROM requires verified rx-first-v2 engine and exact full_words capability; no test armed')
+        return status, dict(config, words=len(rom)//2, engine='rx-first-v2', full_image=True)
+
+    def arm(self, previous, words, command='b'):
         if not (previous['rom_ready'] and previous['ready'] and previous['stopped'] and not previous['arm_pending']):
             raise CollectionError('RP not ready to arm')
-        self.send('b')
+        if command not in ('b', 'B'):
+            raise CollectionError('unsupported RP arm command')
+        self.send(command)
         status = self.status()
         if (status['run'] != previous['run']+1 or status['stopped'] or status['arm_pending'] or
             status['limit'] != words or any(status[k] for k in ('requests','posted','completed','enabled','not_enabled','address_errors','anomalies'))):
@@ -464,9 +475,18 @@ def report(directory, d, rp=None):
                         config.get('marker') not in MARKERS or config.get('words') != SHORT_BYTES//2):
                     result['result'] = 'COLLECTION ERROR'
                     result['collection_error'] = 'missing or mismatched latency mode evidence'
+            elif d.get('latency_full_rom') or config:
+                if (not config or config.get('response') != 'cpu-rom' or
+                        config.get('marker') not in MARKERS or
+                        config.get('engine') != 'rx-first-v2' or
+                        config.get('full_image') is not True or
+                        config.get('words') != d['expected_size']//2):
+                    result['result'] = 'COLLECTION ERROR'
+                    result['collection_error'] = 'missing or mismatched full ROM engine/capability evidence'
             wanted_posted = 0 if config and config.get('response','').startswith('pio-') else d['expected_size']//2
             result['rp_address_validation'] = ('not sampled in PIO constant mode' if config and config.get('response','').startswith('pio-') else 'CPU sequential address check')
             if (rp['run'] != armed['run'] or rp['limit'] != d['expected_size']//2 or
+                armed.get('limit') != d['expected_size']//2 or
                 not rp['stopped'] or rp['arm_pending']):
                 result['result'] = 'COLLECTION ERROR'
                 result['collection_error'] = 'RP identity/budget/stop mismatch'
@@ -509,6 +529,8 @@ def collect(directory, state, rom, timeout):
     d = results[seq]
     if d['kind'] != KIND[pending['kind']]:
         raise CollectionError('Palm test type differs from armed host run; raw PDB retained')
+    if pending.get('latency_full_rom'):
+        d['latency_full_rom'] = True
     rp = None
     if (output/'rp-final.json').exists():
         rp=json.loads((output/'rp-final.json').read_text())
@@ -580,13 +602,19 @@ def execute(args):
         seq=state['last_sequence']+1
         output=directory/f'run-{seq:06d}-{secrets.token_hex(4)}';output.mkdir()
         pending=dict(sequence=seq,kind=args.kind,directory=output.name)
+        full_latency = getattr(args, 'latency_full_rom', False)
+        if full_latency:
+            pending['latency_full_rom'] = True
         rp=None
         atomic_json(output/'host-run.json',dict(session=state['session'],sequence=seq,
                     kind=args.kind,started_utc=time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime())))
         try:
             if KIND[args.kind] in BUS_KINDS:
                 rp=RP(rp_port(args.rp),output/'rp-console.log')
-                if KIND[args.kind] >= 4:
+                if full_latency:
+                    before, config = rp.identify_latency_full(rom, getattr(args, 'marker', 'drive'))
+                    atomic_json(output/'rp-config.json',config)
+                elif KIND[args.kind] >= 4:
                     responder = getattr(args, 'responder', 'cpu')
                     if args.kind == 'rom-prefix' and responder != 'cpu':
                         raise CollectionError('ROM prefix requires CPU responder')
@@ -601,7 +629,8 @@ def execute(args):
                 atomic_json(output/'rp-before.json',before)
                 state['pending']=pending
                 atomic_json(directory/'session.json',state)
-                armed=rp.arm(before,len(expected_payload(rom, KIND[args.kind]))//2)
+                words = len(expected_payload(rom, KIND[args.kind]))//2
+                armed = rp.arm(before, words, command='B') if full_latency else rp.arm(before, words)
                 atomic_json(output/'rp-armed.json',armed)
                 button = {'rom': 'Run', 'rom-prefix': 'ROM64', 'constant-zero': 'Zero', 'constant-ones': 'Ones'}[args.kind]
                 print(f"RP armed run={armed['run']} limit={armed['limit']}. Tap {button}, then Read on Prism.",flush=True)
@@ -640,11 +669,15 @@ def main(argv=None):
             child.add_argument('--kind',choices=KIND,default='rom')
             child.add_argument('--responder', choices=('cpu', 'pio'), default='cpu')
             child.add_argument('--marker', choices=MARKERS, default='drive')
+            child.add_argument('--latency-full-rom', action='store_true',
+                               help='full ROM through verified rx-first-v2 engine (requires --kind rom and CPU)')
             child.add_argument('--rp');child.add_argument('--read-timeout',type=float,default=180)
     args=parser.parse_args(argv)
     try:
         if getattr(args,'timeout',1)<=0 or getattr(args,'read_timeout',1)<=0:
             raise CollectionError('timeouts must be positive')
+        if getattr(args, 'latency_full_rom', False) and (args.kind != 'rom' or args.responder != 'cpu'):
+            raise CollectionError('--latency-full-rom requires --kind rom and --responder cpu')
         return execute(args)
     except (CollectionError,OSError,ValueError,KeyError,struct.error) as exc:
         print('COLLECTION ERROR: '+str(exc),file=sys.stderr)

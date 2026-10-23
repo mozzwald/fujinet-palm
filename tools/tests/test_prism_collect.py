@@ -399,4 +399,111 @@ class Latency(unittest.TestCase):
                     self.assertEqual(result['rp_config'],config)
                     self.assertEqual(result['result'],'PASS')
 
+class FullLatency(unittest.TestCase):
+    setUp=Records.setUp
+    pair=Records.pair
+
+    def test_explicit_engine_and_matching_budget_capability(self):
+        rp=m.RP.__new__(m.RP)
+        before={'stopped':1}
+        config=dict(response='cpu-rom',marker='drive',words=64)
+        good=f'LATENCY response=cpu-rom marker=drive words=64\r\nENGINE=rx-first-v2 full_words={len(self.rom)//2}\r\n'
+        for text,accepted in [(good,True),('',False),('ENGINE=rx-first-v1\r\n',False),
+                              (good.replace('full_words=3624','full_words=64'),False),
+                              (good.replace('rx-first-v2','rx-first-v20'),False)]:
+            rp.identity_text=text
+            with patch.object(rp,'identify_latency',return_value=(before,config)),patch.object(rp,'arm') as arm:
+                if accepted:
+                    state,full=rp.identify_latency_full(self.rom,'drive')
+                    self.assertEqual(state,before)
+                    self.assertEqual(full,dict(config,words=3624,engine='rx-first-v2',full_image=True))
+                else:
+                    with self.assertRaises(m.CollectionError):rp.identify_latency_full(self.rom,'drive')
+                arm.assert_not_called()
+
+    def test_full_arm_uses_B_and_rejects_short_arm(self):
+        rp=m.RP.__new__(m.RP)
+        before=dict(run=0,rom_ready=1,ready=1,stopped=1,arm_pending=0)
+        armed=dict(run=1,stopped=0,arm_pending=0,limit=3624,requests=0,posted=0,
+                   completed=0,enabled=0,not_enabled=0,address_errors=0,anomalies=0)
+        with patch.object(rp,'send') as send,patch.object(rp,'status',return_value=armed):
+            self.assertEqual(rp.arm(before,3624,command='B'),armed)
+            send.assert_called_once_with('B')
+        with patch.object(rp,'send'),patch.object(rp,'status',return_value=dict(armed,limit=64)):
+            with self.assertRaises(m.CollectionError):rp.arm(before,3624,command='B')
+
+    def test_full_report_requires_full_capability_and_both_budgets(self):
+        d=m.decode_record(self.pair(kind=1)[1],self.rom)
+        d.update(latency_full_rom=True,rp_armed=dict(run=1,limit=3624))
+        good=dict(response='cpu-rom',marker='drive',words=3624,engine='rx-first-v2',full_image=True)
+        rp=dict(run=1,limit=3624,requests=3624,posted=3624,completed=3624,enabled=3624,
+                stopped=1,arm_pending=0,not_enabled=0,address_errors=0,anomalies=0)
+        bad_configs=[None,dict(good,words=64),dict(good,engine='rx-first-v1'),
+                     dict(good,response='cpu-ones'),dict(good,full_image=False)]
+        with tempfile.TemporaryDirectory() as tmp:
+            for config in [good,*bad_configs]:
+                if config is None:d.pop('rp_config',None)
+                else:d['rp_config']=config
+                self.assertEqual(m.report(Path(tmp),d,rp)['result'],'PASS' if config==good else 'COLLECTION ERROR')
+            d['rp_config']=good;d['rp_armed']['limit']=64
+            self.assertEqual(m.report(Path(tmp),d,rp)['result'],'COLLECTION ERROR')
+
+    def test_full_flag_cannot_arm_patterns_or_PIO(self):
+        for args in [('--kind','constant-ones'),('--kind','rom-prefix'),('--responder','pio'),
+                     ('--kind','synthetic-pass')]:
+            with patch.object(m,'execute') as execute,contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(m.main(['run','/not-a-session','--latency-full-rom',*args]),2)
+                execute.assert_not_called()
+
+    def test_full_workflow_and_hotsync_retry_preserve_history(self):
+        for retry in (False,True):
+            with tempfile.TemporaryDirectory() as tmp:
+                root=Path(tmp);rom=root/'input.rom';prc=root/'input.prc'
+                rom.write_bytes(self.rom);prc.write_bytes(b'PRC');session=root/'session'
+                with contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(m.main(['setup',str(session),'--rom',str(rom),'--prc',str(prc)]),0)
+                state=json.loads((session/'session.json').read_text());state.update(last_sequence=1,installed=True,transport_verified=True,transport='palm-sync',validation=[{'kind':2},{'kind':3},{'kind':2},{'kind':3},{'kind':2}]);m.atomic_json(session/'session.json',state)
+                count=len(self.rom)//2
+                final=dict(run=3,limit=count,requests=count,posted=count,completed=count,enabled=count,
+                           stopped=1,arm_pending=0,not_enabled=0,address_errors=0,anomalies=0)
+                before=dict(final,run=2,requests=0,posted=0,completed=0,enabled=0,rom_ready=1,ready=1)
+                config=dict(response='cpu-rom',marker='drive',words=count,engine='rx-first-v2',full_image=True)
+                records=[]
+                for seq,kind in [(1,6),(2,1)]:
+                    records.extend([m.fixture_record(state['session'],self.rom,seq,kind,0),
+                                    m.fixture_record(state['session'],self.rom,seq,kind,1,m.expected_payload(self.rom,kind))])
+                attempts=[]
+                def transfer(_session,output,mode,names,timeout,**kwargs):
+                    self.assertEqual(kwargs['transport'],'palm-sync');attempts.append(1)
+                    if retry and len(attempts)==1:raise m.CollectionError('missed HotSync')
+                    (output/(m.DB+'.pdb')).write_bytes(m.make_pdb(m.DB,records))
+                with patch.object(m,'RP') as cls,patch.object(m,'rp_port',return_value='/fake'),patch.object(m,'transfer',side_effect=transfer),contextlib.redirect_stdout(io.StringIO()),contextlib.redirect_stderr(io.StringIO()):
+                    rp=cls.return_value;rp.identify_latency_full.return_value=(before,config)
+                    rp.arm.return_value=dict(before,run=3,stopped=0);rp.wait.return_value=final;rp.stop.return_value=final
+                    self.assertEqual(m.main(['run',str(session),'--latency-full-rom']),2 if retry else 0)
+                    if retry:
+                        pending=json.loads((session/'session.json').read_text())['pending']
+                        self.assertTrue(pending['latency_full_rom'])
+                        self.assertEqual(m.main(['collect',str(session)]),0)
+                    rp.arm.assert_called_once_with(before,count,command='B')
+                    rp.identify_latency_full.assert_called_once_with(self.rom,'drive')
+                    rp.identify.assert_not_called();rp.identify_latency.assert_not_called()
+                updated=json.loads((session/'session.json').read_text())
+                self.assertEqual(updated['last_sequence'],2);self.assertIsNone(updated['pending'])
+                result=json.loads(next(session.glob('run-*/report.json')).read_text())
+                self.assertTrue(result['latency_full_rom']);self.assertEqual(result['rp_config'],config)
+                self.assertEqual(result['result'],'PASS')
+
+    def test_unsupported_full_engine_does_not_reserve_or_arm(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);rom=root/'input.rom';prc=root/'input.prc';rom.write_bytes(self.rom);prc.write_bytes(b'PRC');session=root/'session'
+            with contextlib.redirect_stdout(io.StringIO()):m.main(['setup',str(session),'--rom',str(rom),'--prc',str(prc)])
+            state=json.loads((session/'session.json').read_text());state.update(transport_verified=True,validation=[{'kind':2},{'kind':3},{'kind':2},{'kind':3},{'kind':2}]);m.atomic_json(session/'session.json',state)
+            with patch.object(m,'RP') as cls,patch.object(m,'rp_port',return_value='/fake'),contextlib.redirect_stderr(io.StringIO()):
+                rp=cls.return_value;rp.identify_latency_full.side_effect=m.CollectionError('unsupported engine')
+                rp.stop.return_value=dict(stopped=1,arm_pending=0)
+                self.assertEqual(m.main(['run',str(session),'--latency-full-rom']),2)
+                rp.arm.assert_not_called()
+            state=json.loads((session/'session.json').read_text());self.assertEqual(state['last_sequence'],0);self.assertIsNone(state['pending'])
+
 if __name__=='__main__':unittest.main()

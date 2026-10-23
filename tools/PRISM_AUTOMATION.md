@@ -34,6 +34,34 @@ The user's 2026-10-21 remote-work request authorizes preparing these components
 and offline fixtures before the physical transfer gate can be demonstrated.
 It does not mark any hardware gate complete.
 
+### Full ROM with the optional RX-first responder
+
+After the separate RX-first firmware has passed its short real-ROM check,
+`run --kind rom --latency-full-rom` selects its explicit full-image arm. This
+requires firmware announcing `ENGINE=rx-first-v2 full_words=N` with N exactly
+matching the session's full ROM size in words. The collector still verifies the
+ROM CRC/identity, CPU-ROM response and marker, then sends `B` and checks the
+fresh run and exact budget before cueing the existing Palm **Run**, then **Read**.
+The current ROM is7248 bytes/3624words. No PRC update or session/control rewrite
+is needed; the original guarded, one-tick reader and normal wait settings apply.
+
+```sh
+./tools/prism_collect.py run /path/to/session --kind rom --latency-full-rom
+```
+
+The flag is required explicitly and is valid only for kind`rom` and CPU response.
+Unsupported engines, including RX-firstv1's64-word image, are rejected before
+reserving/arming a Palm run. There is no automatic fallback. Full-engine metadata
+is retained in pending state and the paired report, including across a HotSync
+retry. Both armed and final budgets and all counters must match the full image.
+Missing engine/config evidence cannot become a legacy full-ROM PASS.
+
+Without this flag the original full-ROM firmware identity/`b` procedure remains
+unchanged. Short diagnostics continue to use their64-word`b` arm. These firmware
+choices do not change the ROM content, Palm transfer protocol or FujiBus protocol.
+Readback success does not qualify sampling margin, release, rapid cycles or ROM
+execution. Scope trigger/no-trigger status must still be preserved independently.
+
 From the fujinet-palm root:
 
 ```sh
