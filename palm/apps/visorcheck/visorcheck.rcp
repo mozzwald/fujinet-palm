@@ -1,7 +1,9 @@
 FORM ID 1000 AT (0 0 160 160)
 NOFRAME
 BEGIN
-    TITLE "Visor ROM Check 0.5.0"
+    TITLE "Visor ROM Check 0.6.1"
+    BUTTON "Delay: Tick" ID 1009 AT (2 114 100 12)
+    BUTTON "Each" ID 1010 AT (106 114 52 12)
     BUTTON "Run" ID 1001 AT (2 128 36 14)
     BUTTON "Pass" ID 1004 AT (40 128 36 14)
     BUTTON "Fail" ID 1005 AT (78 128 36 14)
@@ -16,7 +18,7 @@ CONFIRMATION
 DEFAULTBUTTON 0
 BEGIN
     TITLE "CS0 pattern readback"
-    MESSAGE "Keep module seated. Wait for the matching host-ready cue, then read the selected pattern? No timing changes, writes or RESET."
+    MESSAGE "Keep module seated. Match the host's pattern, delay and Each/Burst64 settings before Read. Burst64 checks mapping/removal around each batch; Cancel runs between batches. No wait-state changes or RESET."
     BUTTONS "Cancel" "Read"
 END
 ALERT ID 1102
@@ -26,4 +28,4 @@ BEGIN
     MESSAGE "Tests blocked. Original slot timing could not be verified restored, or an unfinished timing journal exists. Keep module seated, stop RP with x, record Details timing page, and request recovery instructions."
     BUTTONS "OK"
 END
-VERSION ID 1 "0.5.0"
+VERSION ID 1 "0.6.1"

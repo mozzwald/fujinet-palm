@@ -1,10 +1,11 @@
 #ifndef VISOR_RESULT_CODEC_H
 #define VISOR_RESULT_CODEC_H
 /* Explicit big-endian bytes, independent of compiler struct layout. */
-#define VC_HEADER 144UL
+#include "read_spacing.h"
+#define VC_HEADER 160UL
 #define VC_CONFIG_SIZE 68UL
 #define VC_MAX_IMAGE 12000UL
-#define VC_VERSION 0x00000500UL
+#define VC_VERSION 0x00000601UL
 #define VC_STARTED 0
 #define VC_PASS 1
 #define VC_FAIL 2
@@ -22,6 +23,7 @@ struct vc_result {
   unsigned long sequence, kind, status, expected_size, expected_crc, reference_crc;
   unsigned long completed, crc, reason, error, original, requested, applied, restored;
   unsigned long setup_error, restore_error, started, ended;
+  unsigned long spacing_mode, capture_profile, delay_iterations, batch_words;
 };
 unsigned long vc_get32(const unsigned char *);
 void vc_put32(unsigned char *, unsigned long);

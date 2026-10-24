@@ -26,15 +26,18 @@ unsigned long vc_encode(unsigned char *p, unsigned long capacity,
     r->original,r->requested,r->applied,r->restored,r->setup_error,r->restore_error,
     r->started,r->ended,VC_VERSION};
   if(r->expected_size>VC_MAX_IMAGE || (r->completed&1) || r->completed>r->expected_size ||
-     (r->completed && (!actual || !expected))) return 0;
+     (r->completed && (!actual || !expected)) ||
+     !vc_spacing_valid(r->spacing_mode,r->capture_profile,r->delay_iterations,r->batch_words)) return 0;
   for(i=0;i<r->completed;i+=2)
     if(actual[i]!=expected[i] || actual[i+1]!=expected[i+1]) ++count;
   n=VC_HEADER+r->completed+count*8+4;
   if(n>capacity || n>65535) return 0;
-  memset(p,0,(unsigned)n); memcpy(p,"VCR1",4);
-  vc_put32(p+4,1); memcpy(p+8,r->session,16); memcpy(p+24,r->sha,32);
+  memset(p,0,(unsigned)n); memcpy(p,"VCR2",4);
+  vc_put32(p+4,2); memcpy(p+8,r->session,16); memcpy(p+24,r->sha,32);
   for(i=0;i<20;++i) vc_put32(p+56+i*4,fields[i]);
   vc_put32(p+88,count); vc_put32(p+136,n); vc_put32(p+140,VC_HEADER);
+  vc_put32(p+144,r->spacing_mode); vc_put32(p+148,r->capture_profile);
+  vc_put32(p+152,r->delay_iterations); vc_put32(p+156,r->batch_words);
   if(r->completed) memcpy(p+VC_HEADER,actual,(unsigned)r->completed);
   at=VC_HEADER+r->completed;
   for(i=0;i<r->completed;i+=2) {

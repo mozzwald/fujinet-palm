@@ -19,4 +19,7 @@ unsigned long visor_image_local_crc(const unsigned char *data, unsigned long len
  * spacing between steps; no hidden burst reads or local-resource substitution. */
 void visor_image_step(struct visor_image_read *state,
     const struct visor_read_ops *ops, unsigned short card);
+/* Account an already captured physical word. No slot query or bus read;
+ * caller must provide the actual captured word, never the expected reference. */
+void visor_image_accept_word(struct visor_image_read *, unsigned short word);
 #endif

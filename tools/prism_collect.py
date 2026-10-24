@@ -23,6 +23,10 @@ APP = ROOT / 'palm/apps/visorcheck'
 DEFAULT_ROM = ROOT / 'palm/apps/visorbus/build/visorbus.rom'
 DB = 'VisorCheckResults'
 HEADER = 144
+SPACED_HEADER = 160
+READ_SPACING = ('tick', '100us', '10us', '1us', 'none')
+CAPTURE_PROFILES = ('guarded', 'burst64')
+SPACING_ITERATIONS = (0, 330, 33, 3, 0)
 KIND = {'rom': 1, 'synthetic-pass': 2, 'synthetic-fail': 3,
         'constant-zero': 4, 'constant-ones': 5, 'rom-prefix': 6}
 BUS_KINDS = (1, 4, 5, 6)
@@ -116,47 +120,61 @@ def config_record(session, rom):
     return body + struct.pack('>I', crc(body))
 
 
-def fixture_record(session, rom, sequence, kind, status, actual=b''):
+def fixture_record(session, rom, sequence, kind, status, actual=b'',
+                   read_spacing=None, capture_profile='guarded'):
     expected_rom = expected_payload(rom, kind)
     mismatches = [(i, int.from_bytes(expected_rom[i:i+2], 'big'),
                    int.from_bytes(actual[i:i+2], 'big'))
                   for i in range(0, len(actual), 2) if expected_rom[i:i+2] != actual[i:i+2]]
-    header = bytearray(HEADER)
-    header[:8] = b'VCR1' + struct.pack('>I', 1)
+    header_size = SPACED_HEADER if read_spacing is not None else HEADER
+    header = bytearray(header_size)
+    header[:8] = (b'VCR2' + struct.pack('>I', 2)) if read_spacing is not None else (b'VCR1' + struct.pack('>I', 1))
     header[8:24] = bytes.fromhex(session)
     header[24:56] = hashlib.sha256(rom).digest()
     values = [sequence, kind, status, len(expected_rom), crc(expected_rom), crc(rom), len(actual),
               crc(actual), len(mismatches), 0, 0, 0, 0, 0, 0, 0, 0, 1,
-              0 if status == 0 else 2, 0x500 if kind >= 4 else 0x400]
+              0 if status == 0 else 2, 0x600 if read_spacing is not None else 0x500 if kind >= 4 else 0x400]
     if kind in BUS_KINDS and status != 0:
         values[11] = values[13] = 330
     struct.pack_into('>20I', header, 56, *values)
-    length = HEADER + len(actual) + 8 * len(mismatches) + 4
-    struct.pack_into('>II', header, 136, length, HEADER)
+    length = header_size + len(actual) + 8 * len(mismatches) + 4
+    struct.pack_into('>II', header, 136, length, header_size)
+    if read_spacing is not None:
+        mode, profile = READ_SPACING.index(read_spacing), CAPTURE_PROFILES.index(capture_profile)
+        struct.pack_into('>4I', header, 144, mode, profile, SPACING_ITERATIONS[mode], 64 if profile else 1)
     body = bytes(header) + actual + b''.join(struct.pack('>IHH', *m) for m in mismatches)
     return body + struct.pack('>I', crc(body))
 
 
 def decode_record(raw, rom):
-    if len(raw) < HEADER + 4 or raw[:8] != b'VCR1\0\0\0\1':
+    if len(raw) < HEADER + 4 or raw[:8] not in (b'VCR1\0\0\0\1', b'VCR2\0\0\0\2'):
         raise CollectionError('unknown/truncated result record')
+    version = struct.unpack_from('>I', raw, 4)[0]
     size, header = struct.unpack_from('>II', raw, 136)
-    if size != len(raw) or header != HEADER or crc(raw[:-4]) != struct.unpack_from('>I', raw, len(raw)-4)[0]:
+    if size != len(raw) or header != (HEADER if version == 1 else SPACED_HEADER) or len(raw) < header+4 or crc(raw[:-4]) != struct.unpack_from('>I', raw, len(raw)-4)[0]:
         raise CollectionError('record length/integrity failure')
     d = dict(zip(FIELDS, struct.unpack_from('>20I', raw, 56)))
     d['session'], d['rom_sha256'] = raw[8:24].hex(), raw[24:56].hex()
     if (not d['sequence'] or d['kind'] not in KIND.values() or d['status'] not in STATUS or
-        d['app_version'] not in (0x400, 0x401, 0x500) or d['expected_size'] > 12000 or d['expected_size'] & 1 or
+        d['app_version'] not in ((0x400, 0x401, 0x500) if version == 1 else (0x600, 0x601)) or d['expected_size'] > 12000 or d['expected_size'] & 1 or
         not d['expected_size'] or d['completed'] > d['expected_size'] or d['completed'] & 1 or
-        len(raw) != HEADER + d['completed'] + 8*d['mismatch_count'] + 4):
+        len(raw) != header + d['completed'] + 8*d['mismatch_count'] + 4):
         raise CollectionError('unsupported/inconsistent result fields')
-    if d['kind'] >= 4 and d['app_version'] != 0x500:
-        raise CollectionError('latency test requires checker0.5.0')
-    actual = raw[HEADER:HEADER+d['completed']]
+    if d['kind'] >= 4 and d['app_version'] not in (0x500, 0x600, 0x601):
+        raise CollectionError('latency test requires checker0.5.x or0.6.x')
+    mode, profile, iterations, batch = struct.unpack_from('>4I', raw, 144) if version == 2 else (0, 0, 0, 1)
+    if (mode >= len(READ_SPACING) or profile >= len(CAPTURE_PROFILES) or
+            iterations != SPACING_ITERATIONS[mode] or batch != (64 if profile else 1) or
+            (d['kind'] not in BUS_KINDS and (mode or profile))):
+        raise CollectionError('invalid spacing/capture metadata')
+    d.update(record_version=version, header_size=header, spacing_mode=mode,
+             capture_mode=profile, delay_iterations=iterations, batch_words=batch,
+             read_spacing=READ_SPACING[mode], capture_profile=CAPTURE_PROFILES[profile])
+    actual = raw[header:header+d['completed']]
     if crc(actual) != d['crc']:
         raise CollectionError('captured bytes disagree with bus CRC')
     d['mismatches'] = [dict(zip(('offset', 'expected', 'actual'), values))
-                       for values in struct.iter_unpack('>IHH', raw[HEADER+d['completed']:-4])]
+                       for values in struct.iter_unpack('>IHH', raw[header+d['completed']:-4])]
     # Old sessions may have a different ROM. Validate their envelope but never
     # use them as current evidence. Current-session verification follows below.
     if d['rom_sha256'] == hashlib.sha256(rom).hexdigest():
@@ -209,7 +227,9 @@ def decode_pdb(data, session, rom):
         if 'start' not in pair:
             raise CollectionError('final result without STARTED marker')
         final = pair.get('final', pair['start'])
-        if (final['kind'], final['started']) != (pair['start']['kind'], pair['start']['started']):
+        pairing = ('kind', 'started', 'app_version', 'record_version', 'read_spacing',
+                   'capture_profile', 'delay_iterations', 'batch_words')
+        if any(final[k] != pair['start'][k] for k in pairing):
             raise CollectionError('run markers disagree')
         result[seq] = final
     return result
@@ -402,7 +422,7 @@ class RP:
             raise CollectionError('RP arm/read-budget confirmation failed')
         return status
 
-    def wait(self, armed, timeout):
+    def wait(self, armed, timeout, collect_on_hotsync=False):
         end = time.monotonic()+timeout
         while time.monotonic()<end:
             status = self.status()
@@ -411,6 +431,14 @@ class RP:
             if status['stopped'] and not status['arm_pending']:
                 self.send('e')
                 self.read(.5)
+                return status
+            if collect_on_hotsync and find_palm():
+                # A fast Palm batch can finish despite missed RP requests.
+                # Preserve partial counters and collect its saved result now,
+                # rather than waiting indefinitely for reads that already ended.
+                status = self.stop()
+                status['host_stopped_for_hotsync'] = 1
+                self.send('e'); self.read(.5)
                 return status
             time.sleep(1)
         raise CollectionError('ROM read timeout; test not complete')
@@ -502,6 +530,8 @@ def report(directory, d, rp=None):
              f"Bytes: {d['completed']}/{d['expected_size']}; mismatches: {d['mismatch_count']}",
              f"Timing ns: original={d['original']}, applied={d['applied']}; no timing changes requested.",
              '', '| Offset | Expected | Actual |', '| --- | --- | --- |']
+    lines[7:7] = [f"Requested spacing: {d['read_spacing']}; capture: {d['capture_profile']}; batch: {d['batch_words']} words.",
+                  'Requested delay is not a measured bus gap or setup/hold margin.']
     if d.get('rp_config'):
         config = d['rp_config']
         lines[7:7] = [f"Responder: {config['response']}; marker: {config['marker']}; budget: {config['words']} words.",
@@ -529,6 +559,9 @@ def collect(directory, state, rom, timeout):
     d = results[seq]
     if d['kind'] != KIND[pending['kind']]:
         raise CollectionError('Palm test type differs from armed host run; raw PDB retained')
+    if (d['read_spacing'] != pending.get('read_spacing', 'tick') or
+            d['capture_profile'] != pending.get('capture_profile', 'guarded')):
+        raise CollectionError('Palm spacing/capture differs from armed host settings; raw PDB retained, do not repeat the read')
     if pending.get('latency_full_rom'):
         d['latency_full_rom'] = True
     rp = None
@@ -542,6 +575,11 @@ def collect(directory, state, rom, timeout):
         raise CollectionError(result['collection_error'])
     if d['kind'] in (2,3) and d['status'] in (1,2):
         state.setdefault('validation',[]).append(dict(sequence=seq,kind=d['kind'],result=result['result']))
+    if d['kind'] in (4,5) and result['result']=='PASS':
+        state.setdefault('spacing_validation',[]).append(dict(sequence=seq,kind=d['kind'],
+            read_spacing=d['read_spacing'],capture_profile=d['capture_profile'],words=64,
+            app_version=d['app_version']))
+    state['last_app_version']=d['app_version']
     state['last_sequence'],state['pending']=seq,None
     atomic_json(directory/'session.json',state)
     print(f"{result['result']}: {output/'report.md'}",flush=True)
@@ -599,15 +637,26 @@ def execute(args):
                 raise CollectionError('first collect at least five synthetic runs, including PASS and FAIL')
         if state['pending']:
             raise CollectionError('previous run pending: use collect; never overwrite uncollected evidence')
+        read_spacing = getattr(args, 'read_spacing', 'tick')
+        capture_profile = getattr(args, 'capture_profile', 'guarded')
+        fast_collection = read_spacing != 'tick' or capture_profile != 'guarded'
+        if args.kind == 'rom' and fast_collection:
+            validated = {v['kind'] for v in state.get('spacing_validation', [])
+                         if v['read_spacing']==read_spacing and v['capture_profile']==capture_profile and v['words']==64
+                         and v.get('app_version',0x600)==state.get('last_app_version',0x600)}
+            if not {4,5} <= validated:
+                raise CollectionError('first collect passing Zero and Ones64 at this exact spacing/capture before full ROM')
         seq=state['last_sequence']+1
         output=directory/f'run-{seq:06d}-{secrets.token_hex(4)}';output.mkdir()
-        pending=dict(sequence=seq,kind=args.kind,directory=output.name)
+        pending=dict(sequence=seq,kind=args.kind,directory=output.name,
+                     read_spacing=read_spacing,capture_profile=capture_profile)
         full_latency = getattr(args, 'latency_full_rom', False)
         if full_latency:
             pending['latency_full_rom'] = True
         rp=None
         atomic_json(output/'host-run.json',dict(session=state['session'],sequence=seq,
-                    kind=args.kind,started_utc=time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime())))
+                    kind=args.kind,read_spacing=read_spacing,capture_profile=capture_profile,
+                    started_utc=time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime())))
         try:
             if KIND[args.kind] in BUS_KINDS:
                 rp=RP(rp_port(args.rp),output/'rp-console.log')
@@ -634,7 +683,7 @@ def execute(args):
                 atomic_json(output/'rp-armed.json',armed)
                 button = {'rom': 'Run', 'rom-prefix': 'ROM64', 'constant-zero': 'Zero', 'constant-ones': 'Ones'}[args.kind]
                 print(f"RP armed run={armed['run']} limit={armed['limit']}. Tap {button}, then Read on Prism.",flush=True)
-                final=rp.wait(armed,args.read_timeout)
+                final = rp.wait(armed,args.read_timeout,collect_on_hotsync=True) if fast_collection else rp.wait(armed,args.read_timeout)
                 atomic_json(output/'rp-final.json',final)
             else:
                 state['pending']=pending
@@ -669,6 +718,8 @@ def main(argv=None):
             child.add_argument('--kind',choices=KIND,default='rom')
             child.add_argument('--responder', choices=('cpu', 'pio'), default='cpu')
             child.add_argument('--marker', choices=MARKERS, default='drive')
+            child.add_argument('--read-spacing', choices=READ_SPACING, default='tick')
+            child.add_argument('--capture-profile', choices=CAPTURE_PROFILES, default='guarded')
             child.add_argument('--latency-full-rom', action='store_true',
                                help='full ROM through verified rx-first-v2 engine (requires --kind rom and CPU)')
             child.add_argument('--rp');child.add_argument('--read-timeout',type=float,default=180)
@@ -678,6 +729,8 @@ def main(argv=None):
             raise CollectionError('timeouts must be positive')
         if getattr(args, 'latency_full_rom', False) and (args.kind != 'rom' or args.responder != 'cpu'):
             raise CollectionError('--latency-full-rom requires --kind rom and --responder cpu')
+        if args.command=='run' and KIND[args.kind] not in BUS_KINDS and (args.read_spacing!='tick' or args.capture_profile!='guarded'):
+            raise CollectionError('synthetic results have no physical spacing/capture setting')
         return execute(args)
     except (CollectionError,OSError,ValueError,KeyError,struct.error) as exc:
         print('COLLECTION ERROR: '+str(exc),file=sys.stderr)

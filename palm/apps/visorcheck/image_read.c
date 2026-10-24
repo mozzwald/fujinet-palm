@@ -45,6 +45,10 @@ void visor_image_step(struct visor_image_read *s,
   s->guard.error = ops->read_word(ops->context,
       s->guard.base + s->completed, &word);
   if (s->guard.error) { s->guard.reason = visorReadAccessFailed; return; }
+  visor_image_accept_word(s, word);
+}
+void visor_image_accept_word(struct visor_image_read *s, unsigned short word) {
+  if (s->guard.reason != visorReadReady || s->completed >= s->length) return;
   if (s->expected) {
     unsigned short expected = (unsigned short)(
         ((unsigned short)s->expected[s->completed] << 8) |

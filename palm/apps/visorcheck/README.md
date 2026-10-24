@@ -97,3 +97,52 @@ send `x` and confirm `stopped=1` before rearming.
 Host checks cover cleanup after pass/fail/cancel/exit/read error, setters that
 change timing despite an error, readback rejection, failed restoration/journaling,
 and observed slot changes. They do not replace physical timing qualification.
+
+
+## Selectable read spacing and bounded capture (0.6.0)
+
+The checker starts with **Delay: Tick / Each**, preserving the original guarded
+per-word path. Tap Delay to cycle Tick, 100us, 10us, 1us, None; tap Each to toggle
+Burst64. Settings are frozen in the START and final result records and cannot
+change during a read. VCR2 records carry the spacing, capture profile, delay-loop
+iterations and maximum batch size; the collector still decodes VCR1 history.
+Control PDB and sequence preferences remain unchanged.
+
+Each checks the slot and removal-recovery frame per word. Burst64 checks mapping
+before and after at most 64 physical reads, with one removal-recovery frame around
+the batch. It stores actual words in RAM, then calculates CRC and mismatches.
+Interrupts remain enabled. Cancel and GUI updates occur between batches; Tick
+batches can take about 0.64 seconds. Keep the module seated. This recovery is
+not general protection against arbitrary electrical bus faults.
+
+Microsecond labels request nominal delays at the Prism's 33 MHz CPU clock:
+330/33/3 DBRA iterations for 100/10/1us (MC68000UM table 8-9). RAM wait states,
+interrupts and loop overhead affect actual timing. None omits the intentional
+delay; it does not imply consecutive CPU bus cycles. Measure actual gaps before
+making timing claims. No CPU clock, interrupt mask or Prism access-time writes
+are introduced by spacing selection.
+
+Change Each/Tick to Burst64/Tick first, then shorten delay while retaining the
+same pattern/profile. Host run flags must match the UI exactly, for example
+`--read-spacing 100us --capture-profile burst64`. Arm 64 words for each bounded
+Zero/Ones/ROM64 test. Both Zero and Ones must pass at the exact spacing/profile
+before the collector permits a full-ROM transfer there. Stop and analyze any
+failure. A fast batch may finish while the RP misses requests; HotSync then
+stops the RP and collects partial counters and the saved Palm result, preserving
+an INCOMPLETE result rather than waiting for impossible extra requests.
+
+### Tighter burst loop (0.6.1)
+
+Burst64 now advances source and destination pointers directly and writes the
+volatile completed-word count once after each captured word. The loop index
+stays in a register; the removal catch path uses only the saved volatile count.
+The compiled loop retains exactly one module-word read, one RAM payload store
+and one progress store per iteration. Interrupts, mapping checks, maximum batch
+size, nominal delay loops, defaults and result format remain unchanged.
+
+Version 0.6.0 and its passing evidence remain archived. Version 0.6.1 must pass
+bounded controls before a larger transfer. The collector associates pattern
+qualification with the app version observed in the saved result, so prior-version
+patterns cannot qualify a full read after a new-version control is collected.
+Measure actual gaps again; reduced loop overhead does not establish realistic
+consecutive bus cycles or resolve the PIO deselect blind interval.

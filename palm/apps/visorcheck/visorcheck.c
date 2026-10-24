@@ -6,6 +6,7 @@
 #include "expected_rom.h"
 #include "result_store.h"
 #include "diagnostic.h"
+#include "burst_read.h"
 #if EXPECTED_ROM_SIZE > VC_MAX_IMAGE
 #error Result record capacity must be reviewed for larger images
 #endif
@@ -13,19 +14,39 @@
 enum { MainForm = 1000, CheckButton = 1001, CancelButton = 1002,
        DetailsButton = 1003, PassButton = 1004, FailButton = 1005, ConfirmAlert = 1100,
        ZeroButton = 1006, OnesButton = 1007, PrefixButton = 1008,
+       SpacingButton = 1009, CaptureButton = 1010,
        SlowAlert = 1101, RestoreAlert = 1102 };
 static struct visor_timed_read run;
 static unsigned details_page;
 static Boolean warned;
 static Boolean reading;
 static UInt32 reference_crc;
-static unsigned char captured[EXPECTED_ROM_SIZE];
+static unsigned char captured[EXPECTED_ROM_SIZE] __attribute__((aligned(2)));
 static struct vc_result result;
 static Boolean recording;
 static Err storage_error;
 static const Char *result_message;
 static unsigned char pattern[VC_SHORT_BYTES];
 static const unsigned char *expected_data;
+static unsigned long selected_spacing, selected_capture;
+static Char spacing_text[24];
+
+static __inline__ void wait_spacing(unsigned long mode, unsigned long iterations) {
+  if(mode==VC_SPACE_TICK) SysTaskDelay(1);
+  else if(iterations) {
+    UInt16 remaining=(UInt16)(iterations-1);
+    /* Nominal delay only; actual gaps include bus/RAM waits and interrupts. */
+    __asm__ volatile("1: dbra %0,1b" : "+d"(remaining) : : "cc");
+  }
+}
+static void spacing_controls(void) {
+  FormType *form=FrmGetActiveForm();
+  StrCopy(spacing_text,"Delay: ");
+  StrCat(spacing_text,vc_spacing_label(selected_spacing));
+  CtlSetLabel((ControlType *)FrmGetObjectPtr(form,FrmGetObjectIndex(form,SpacingButton)),spacing_text);
+  CtlSetLabel((ControlType *)FrmGetObjectPtr(form,FrmGetObjectIndex(form,CaptureButton)),
+              vc_capture_label(selected_capture));
+}
 
 
 static void line(Coord y, const Char *label, UInt32 value) {
@@ -79,6 +100,37 @@ static int journal(void *ctx, unsigned long original) {
   return 0;
 }
 static const struct visor_timing_ops timing_ops = {&ops, set_time, journal};
+static int capture_batch(void *ctx, unsigned long address, unsigned char *destination,
+    unsigned short words, unsigned long spacing, unsigned long iterations,
+    unsigned short *completed) {
+  ErrExceptionType frame;
+  MemPtr *volatile list;
+  volatile UInt16 done=0;
+  volatile int error=0;
+  volatile UInt16 *source=(volatile UInt16 *)address;
+  UInt16 *target=(UInt16 *)destination;
+  UInt16 i;
+  (void)ctx; *completed=0;
+  if(!words || words>VC_BURST_WORDS || (address&1) || ((UInt32)destination&1)) return 0x8102;
+  list=VisorCardCatchListP();
+  if(!list) return 0x8101;
+  frame.err=0; frame.nextP=(ErrExceptionPtr)*list; *list=(MemPtr)&frame;
+  if(ErrSetJump(frame.state)==0) {
+    for(i=0;i<words;++i) {
+      wait_spacing(spacing,iterations);
+      /* Exactly one volatile module read and one native big-endian RAM store.
+       * No expected data, CRC, GUI or database work in this loop. */
+      *target++=*source++;
+      /* Only this volatile progress store is required between physical reads.
+       * The catch path reads done, never the modified pointers or loop index. */
+      done=(UInt16)(i+1);
+    }
+  } else error=0x810a;
+  *list=(MemPtr)frame.nextP;
+  *completed=done;
+  return error;
+}
+static const struct vc_burst_ops burst_ops={capture_batch,0};
 static void finish(unsigned long status) {
   visor_timed_finish(&run, &timing_ops);
   reading = false;
@@ -112,15 +164,15 @@ static void finish(unsigned long status) {
 
 static void draw(const Char *message) {
   RectangleType area;
-  RctSetRectangle(&area, 0, 18, 160, 108); WinEraseRectangle(&area, 0);
+  RctSetRectangle(&area, 0, 18, 160, 95); WinEraseRectangle(&area, 0);
   WinDrawChars(message, StrLen(message), 4, 22);
   line(39, "Test bytes: ", result.expected_size ? result.expected_size : EXPECTED_ROM_SIZE);
-  line(52, "Read bytes: ", run.image.completed);
-  line(65, "Expected: ", result.expected_size ? result.expected_crc : EXPECTED_ROM_CRC);
-  line(78, "Bus CRC: ", run.image.crc ^ 0xffffffffUL);
-  line(91, "Bad words: ", run.image.mismatch_count);
-  line(104, "RAM CRC: ", reference_crc);
-  line(117, "Error: ", (UInt16)(run.restore_error ? run.restore_error :
+  line(49, "Read bytes: ", run.image.completed);
+  line(59, "Expected: ", result.expected_size ? result.expected_crc : EXPECTED_ROM_CRC);
+  line(69, "Bus CRC: ", run.image.crc ^ 0xffffffffUL);
+  line(79, "Bad words: ", run.image.mismatch_count);
+  line(89, "RAM CRC: ", reference_crc);
+  line(99, "Error: ", (UInt16)(run.restore_error ? run.restore_error :
        run.error ? run.error : storage_error ? storage_error : run.image.guard.error));
   if (storage_error) {
     RctSetRectangle(&area, 0, 20, 160, 15); WinEraseRectangle(&area, 0);
@@ -135,32 +187,36 @@ static void timing_details(void) {
   UInt32 values[4];
   values[0] = run.original; values[1] = run.requested;
   values[2] = run.applied; values[3] = run.restored;
-  RctSetRectangle(&area, 0, 18, 160, 108); WinEraseRectangle(&area, 0);
+  RctSetRectangle(&area, 0, 18, 160, 95); WinEraseRectangle(&area, 0);
   WinDrawChars("Timing (0 = not recorded)", 24, 4, 20);
   for (i = 0; i < 4; ++i) {
     StrCopy(text, labels[i]); StrIToA(number, values[i]); StrCat(text, number);
-    WinDrawChars(text, StrLen(text), 4, 39 + i * 16);
+    WinDrawChars(text, StrLen(text), 4, 39 + i * 13);
   }
-  line(105, "Setup err: ", (UInt16)run.error);
-  line(118, "Restore err: ", (UInt16)run.restore_error);
+  line(93, "Setup err: ", (UInt16)run.error);
+  line(104, "Restore err: ", (UInt16)run.restore_error);
 }
 static void details(void) {
   RectangleType area;
   unsigned i, count = run.image.mismatch_count < 8 ? (unsigned)run.image.mismatch_count : 8;
-  RctSetRectangle(&area, 0, 18, 160, 108); WinEraseRectangle(&area, 0);
+  RctSetRectangle(&area, 0, 18, 160, 95); WinEraseRectangle(&area, 0);
   line(20, "Bad words: ", run.image.mismatch_count);
   WinDrawChars("Offset   Got   Expected", 23, 4, 31);
   for (i = 0; i < count; ++i) {
     Char hex[10];
-    StrIToH(hex, run.image.first[i].offset); WinDrawChars(hex + 4, 4, 4, 44 + i * 9);
-    StrIToH(hex, run.image.first[i].actual); WinDrawChars(hex + 4, 4, 58, 44 + i * 9);
-    StrIToH(hex, run.image.first[i].expected); WinDrawChars(hex + 4, 4, 106, 44 + i * 9);
+    StrIToH(hex, run.image.first[i].offset); WinDrawChars(hex + 4, 4, 4, 40 + i * 8);
+    StrIToH(hex, run.image.first[i].actual); WinDrawChars(hex + 4, 4, 58, 40 + i * 8);
+    StrIToH(hex, run.image.first[i].expected); WinDrawChars(hex + 4, 4, 106, 40 + i * 8);
   }
-  line(116, "Reason: ", run.image.guard.reason);
+  line(105, "Reason: ", run.image.guard.reason);
 }
 static Boolean begin_result(unsigned long kind) {
   MemSet(&run, sizeof(run), 0);
   MemSet(&result, sizeof(result), 0);
+  result.spacing_mode=(kind==VC_SYNTH_PASS || kind==VC_SYNTH_FAIL)?VC_SPACE_TICK:selected_spacing;
+  result.capture_profile=(kind==VC_SYNTH_PASS || kind==VC_SYNTH_FAIL)?VC_CAPTURE_GUARDED:selected_capture;
+  result.delay_iterations=vc_spacing_iterations(result.spacing_mode);
+  result.batch_words=vc_capture_words(result.capture_profile);
   expected_data = vc_expected(kind, expected_rom_data, EXPECTED_ROM_SIZE,
                              pattern, sizeof(pattern), &result.expected_size);
   if (!expected_data) { draw("Invalid test reference"); return false; }
@@ -195,7 +251,18 @@ static void synthetic(Boolean fail) {
 static Boolean main_event(EventType *e) {
   if (e->eType == frmOpenEvent) {
     FrmDrawForm(FrmGetActiveForm());
+    spacing_controls();
     draw(run.blocked ? "BLOCKED: timing journal" : "Collector: await host cue"); return true;
+  }
+  if(e->eType==ctlSelectEvent && (e->data.ctlSelect.controlID==SpacingButton ||
+                                e->data.ctlSelect.controlID==CaptureButton)) {
+    if(!reading) {
+      if(e->data.ctlSelect.controlID==SpacingButton)
+        selected_spacing=(selected_spacing+1)%VC_SPACE_COUNT;
+      else selected_capture=(selected_capture+1)%VC_CAPTURE_COUNT;
+      spacing_controls();
+    }
+    return true;
   }
   if (e->eType == ctlSelectEvent && e->data.ctlSelect.controlID == CancelButton) {
     finish(VC_CANCELLED); result_message = "Cancelled; send RP x";
@@ -234,14 +301,18 @@ static Boolean main_event(EventType *e) {
     visor_timed_begin(&run, &timing_ops, result.expected_size, expected_data, 0);
     reading = run.active;
     if (!reading) finish(VC_ERROR);
-    result_message = reading ? "Reading spaced CS0 words" : "Refused; send RP x";
+    result_message = reading ? "Reading CS0 words" : "Refused; send RP x";
     draw(result_message); return true;
   }
   if (e->eType == nilEvent && reading) {
     /* No database allocation or writes during the bus read. Capture only the
      * returned word in RAM; append the completed result after output release. */
-    SysTaskDelay(1);
-    visor_timed_step(&run, &timing_ops);
+    if(result.capture_profile==VC_CAPTURE_BURST)
+      vc_burst_step(&run,&timing_ops,&burst_ops,captured,sizeof(captured),result.spacing_mode);
+    else {
+      wait_spacing(result.spacing_mode,result.delay_iterations);
+      visor_timed_step(&run, &timing_ops);
+    }
     EvtResetAutoOffTimer();
     if (!run.active) {
       Boolean pass = run.image.completed == run.image.length &&
@@ -251,7 +322,7 @@ static Boolean main_event(EventType *e) {
           result.status == VC_ERROR ? "Interrupted; send RP x" :
           pass ? "Pattern CRC PASS" : "Pattern CRC FAIL";
       draw(result_message);
-    } else if (!(run.image.completed & 127)) draw("Reading spaced CS0 words");
+    } else if (!(run.image.completed & 127)) draw("Reading CS0 words");
     return true;
   }
   return false;
@@ -269,6 +340,7 @@ UInt32 PilotMain(UInt16 cmd, MemPtr params, UInt16 flags) {
   (void)params; (void)flags;
   if (cmd != sysAppLaunchCmdNormalLaunch) return 0;
   reading = false;
+  selected_spacing=VC_SPACE_TICK; selected_capture=VC_CAPTURE_GUARDED;
   expected_data = expected_rom_data;
   {
     UInt32 pending = 0;

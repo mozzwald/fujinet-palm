@@ -119,6 +119,51 @@ class Records(unittest.TestCase):
                 d=m.decode_record((Path(tmp)/f'constant{kind}.bin').read_bytes(),rom)
                 self.assertEqual(d['kind'],kind);self.assertEqual(d['completed'],128)
                 self.assertEqual(d['result'],'PASS')
+            for mode, label in enumerate(m.READ_SPACING):
+                for profile, name in enumerate(m.CAPTURE_PROFILES):
+                    d=m.decode_record((Path(tmp)/f'spacing_{mode}_{profile}.bin').read_bytes(),rom)
+                    self.assertEqual((d['read_spacing'],d['capture_profile']),(label,name))
+                    self.assertEqual(d['batch_words'],64 if profile else 1)
+                    self.assertEqual(d['delay_iterations'],m.SPACING_ITERATIONS[mode])
+
+    def test_spacing_history_and_exact_pairing(self):
+        records=self.pair()
+        for seq, label in enumerate(m.READ_SPACING,2):
+            for status in (0,1):
+                records.append(m.fixture_record(self.session,self.rom,seq,6,status,
+                    self.rom[:128] if status else b'',label,'burst64'))
+        runs=m.decode_pdb(m.make_pdb(m.DB,records),self.session,self.rom)
+        self.assertEqual(len(runs),6)
+        self.assertEqual(runs[1]['record_version'],1)
+        self.assertEqual(runs[6]['read_spacing'],'none')
+        wrong=list(records)
+        wrong[-1]=m.fixture_record(self.session,self.rom,6,6,1,self.rom[:128],'1us','burst64')
+        with self.assertRaises(m.CollectionError):
+            m.decode_pdb(m.make_pdb(m.DB,wrong),self.session,self.rom)
+
+    def test_spacing_metadata_corruption_with_valid_crc(self):
+        raw=m.fixture_record(self.session,self.rom,1,6,1,self.rom[:128],'1us','burst64')
+        for offset, value in ((144,99),(148,99),(152,0),(156,1),(132,0x500),(140,144)):
+            bad=bytearray(raw);struct.pack_into('>I',bad,offset,value)
+            bad[-4:]=struct.pack('>I',m.crc(bad[:-4]))
+            with self.assertRaises(m.CollectionError):m.decode_record(bad,self.rom)
+
+    def test_optimized_checker_version_and_pair_identity(self):
+        records=[]
+        for seq, version in ((1,0x600),(2,0x601)):
+            for status in (0,1):
+                raw=bytearray(m.fixture_record(self.session,self.rom,seq,6,status,
+                    self.rom[:128] if status else b'','none','burst64'))
+                struct.pack_into('>I',raw,132,version)
+                raw[-4:]=struct.pack('>I',m.crc(raw[:-4]))
+                records.append(bytes(raw))
+        runs=m.decode_pdb(m.make_pdb(m.DB,records),self.session,self.rom)
+        self.assertEqual(runs[1]['app_version'],0x600)
+        self.assertEqual(runs[2]['app_version'],0x601)
+        bad=bytearray(records[-1]);struct.pack_into('>I',bad,132,0x600)
+        bad[-4:]=struct.pack('>I',m.crc(bad[:-4]));records[-1]=bytes(bad)
+        with self.assertRaises(m.CollectionError):
+            m.decode_pdb(m.make_pdb(m.DB,records),self.session,self.rom)
 
 class Workflow(unittest.TestCase):
     setUp=Records.setUp
@@ -306,6 +351,15 @@ class Workflow(unittest.TestCase):
             with self.assertRaises(m.CollectionError):rp.wait(armed,1)
         with patch.object(rp,'status',return_value=dict(run=1,limit=3624,stopped=0,arm_pending=0)),patch.object(m.time,'sleep'):
             with self.assertRaises(m.CollectionError):rp.wait(armed,.001)
+
+    def test_fast_read_hotsync_collects_partial_rp_counts(self):
+        rp=m.RP.__new__(m.RP);armed=dict(run=1,limit=64)
+        partial=dict(run=1,limit=64,stopped=0,arm_pending=0,completed=61)
+        with patch.object(rp,'status',return_value=partial),patch.object(m,'find_palm',return_value='/fake'),patch.object(rp,'stop',return_value=dict(partial,stopped=1)) as stop,patch.object(rp,'send') as send,patch.object(rp,'read'):
+            result=rp.wait(armed,1,collect_on_hotsync=True)
+            self.assertEqual(result['completed'],61)
+            self.assertEqual(result['host_stopped_for_hotsync'],1)
+            stop.assert_called_once();send.assert_called_once_with('e')
 
 class Latency(unittest.TestCase):
     setUp=Records.setUp
@@ -505,5 +559,24 @@ class FullLatency(unittest.TestCase):
                 self.assertEqual(m.main(['run',str(session),'--latency-full-rom']),2)
                 rp.arm.assert_not_called()
             state=json.loads((session/'session.json').read_text());self.assertEqual(state['last_sequence'],0);self.assertIsNone(state['pending'])
+
+    def test_prior_checker_patterns_do_not_qualify_optimized_full_read(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);rom=root/'input.rom';prc=root/'input.prc'
+            rom.write_bytes(self.rom);prc.write_bytes(b'PRC');session=root/'session'
+            with contextlib.redirect_stdout(io.StringIO()):
+                m.main(['setup',str(session),'--rom',str(rom),'--prc',str(prc)])
+            state=json.loads((session/'session.json').read_text())
+            state.update(transport_verified=True,last_app_version=0x601,
+                validation=[{'kind':2},{'kind':3},{'kind':2},{'kind':3},{'kind':2}],
+                spacing_validation=[dict(kind=k,read_spacing='none',capture_profile='burst64',
+                    words=64,app_version=0x600) for k in (4,5)])
+            m.atomic_json(session/'session.json',state)
+            with patch.object(m,'RP') as cls,contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(m.main(['run',str(session),'--latency-full-rom',
+                    '--read-spacing','none','--capture-profile','burst64']),2)
+                cls.assert_not_called()
+            after=json.loads((session/'session.json').read_text())
+            self.assertEqual(after,state)
 
 if __name__=='__main__':unittest.main()

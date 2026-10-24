@@ -57,10 +57,10 @@ void PrefSetAppPreferences(UInt32 creator,UInt16 id,Int16 version,const void *p,
 }
 static void initialize(struct vc_result *r) {
   memset(r,0,sizeof(*r));r->expected_size=16;r->expected_crc=0xecbb4b55UL;
-  r->reference_crc=r->expected_crc;r->kind=VC_SYNTH_PASS;r->started=1;
+  r->reference_crc=r->expected_crc;r->batch_words=1;r->kind=VC_SYNTH_PASS;r->started=1;
 }
 int main(void) {
-  unsigned char config[68]={0},actual[16]={0},snapshot[148];
+  unsigned char config[68]={0},actual[16]={0},snapshot[VC_HEADER+4];
   struct vc_result r;
   config_db.type='VCTL';config_db.creator='FNVC';config_db.count=1;
   config_db.records[0].bytes=config;config_db.records[0].size=68;
@@ -68,18 +68,18 @@ int main(void) {
   vc_put32(config+24,16);vc_put32(config+28,0xecbb4b55UL);
   vc_put32(config+64,visor_image_local_crc(config,64));
   initialize(&r);assert(!vc_store_begin(&r));assert(r.sequence==1 && result_db.count==1);
-  memcpy(snapshot,result_db.records[0].bytes,148);
+  memcpy(snapshot,result_db.records[0].bytes,sizeof(snapshot));
   r.status=VC_PASS;r.completed=16;r.crc=r.expected_crc;r.ended=2;
   fail_record=1;assert(vc_store_append(&r,actual,actual));fail_record=0;
-  assert(result_db.count==1 && !memcmp(snapshot,result_db.records[0].bytes,148));
+  assert(result_db.count==1 && !memcmp(snapshot,result_db.records[0].bytes,sizeof(snapshot)));
   fail_write=1;assert(vc_store_append(&r,actual,actual));fail_write=0;
-  assert(result_db.count==1 && !memcmp(snapshot,result_db.records[0].bytes,148));
+  assert(result_db.count==1 && !memcmp(snapshot,result_db.records[0].bytes,sizeof(snapshot)));
   fail_release=1;assert(vc_store_append(&r,actual,actual));fail_release=0;
   assert(result_db.count==1);
   fail_alloc=1;assert(vc_store_append(&r,actual,actual));fail_alloc=0;
   assert(result_db.count==1);
   assert(!vc_store_append(&r,actual,actual));assert(result_db.count==2);
-  assert(!memcmp(snapshot,result_db.records[0].bytes,148));
+  assert(!memcmp(snapshot,result_db.records[0].bytes,sizeof(snapshot)));
   /* Simulated app exit/crash and relaunch: append, never overwrite prior runs. */
   initialize(&r);assert(!vc_store_begin(&r));assert(r.sequence==2 && result_db.count==3);
   initialize(&r);assert(!vc_store_begin(&r));assert(r.sequence==3 && result_db.count==4);
@@ -98,7 +98,7 @@ int main(void) {
   assert(r.sequence==5 && result_db.count==5);
   assert(vc_get32(result_db.records[4].bytes+68)==8);
   assert(vc_get32(result_db.records[4].bytes+72)==0x12345678);
-  assert(!memcmp(snapshot,result_db.records[0].bytes,148));
+  assert(!memcmp(snapshot,result_db.records[0].bytes,sizeof(snapshot)));
   while(result_db.count)DmRemoveRecord(&result_db,(UInt16)(result_db.count-1));
   puts("Palm storage mock: append-only runs, crash markers, low memory, failed/partial writes, journal and ownership failures PASS");return 0;
 }
