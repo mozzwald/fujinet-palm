@@ -28,3 +28,6 @@ bin.stamp
 __pycache__/
 
 /palm/apps/visorcheck/visorcheck
+
+/palm/apps/romprobe/romprobe
+/palm/apps/rominspect/rominspect

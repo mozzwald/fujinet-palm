@@ -1,3 +1,4 @@
+#include "app_identity.h"
 #include "result_store.h"
 #include "image_read.h"
 #include <assert.h>
@@ -10,11 +11,11 @@ static int results_exist, fail_alloc, fail_record, fail_write, fail_pref, fail_r
 static unsigned char prefs[20];static int have_pref;
 LocalID DmFindDatabase(UInt16 card,const char *name) {
   assert(card==0);
-  if(!strcmp(name,"VisorCheckControl"))return 1;
-  assert(!strcmp(name,"VisorCheckResults"));return results_exist ? 2:0;
+  if(!strcmp(name,VC_CONTROL_DB))return 1;
+  assert(!strcmp(name,VC_RESULTS_DB));return results_exist ? 2:0;
 }
 Err DmCreateDatabase(UInt16 card,const char *name,UInt32 creator,UInt32 type,Boolean resource) {
-  assert(card==0 && !resource && !strcmp(name,"VisorCheckResults"));
+  assert(card==0 && !resource && !strcmp(name,VC_RESULTS_DB));
   results_exist=1;result_db.creator=creator;result_db.type=type;return 0;
 }
 Err DmDatabaseInfo(UInt16 card,LocalID id,char *a,UInt16 *b,UInt16 *c,UInt32 *d,UInt32 *e,UInt32 *f,UInt32 *g,LocalID *h,LocalID *i,UInt32 *type,UInt32 *creator) {
@@ -47,12 +48,12 @@ MemPtr MemHandleLock(MemHandle h){return h->bytes;}
 Err MemHandleUnlock(MemHandle h){(void)h;return 0;}
 UInt32 MemHandleSize(MemHandle h){return (UInt32)h->size;}
 Int16 PrefGetAppPreferences(UInt32 creator,UInt16 id,void *p,UInt16 *size,Boolean saved) {
-  assert(creator=='FNVC' && id==2 && saved);
+  assert(creator==VC_CREATOR && id==2 && saved);
   if(!have_pref)return noPreferenceFound;
   assert(*size>=20);memcpy(p,prefs,20);*size=20;return 1;
 }
 void PrefSetAppPreferences(UInt32 creator,UInt16 id,Int16 version,const void *p,UInt16 size,Boolean saved) {
-  assert(creator=='FNVC' && id==2 && saved && version==1 && size==20);
+  assert(creator==VC_CREATOR && id==2 && saved && version==1 && size==20);
   if(!fail_pref){memcpy(prefs,p,20);have_pref=1;}
 }
 static void initialize(struct vc_result *r) {
@@ -62,7 +63,7 @@ static void initialize(struct vc_result *r) {
 int main(void) {
   unsigned char config[68]={0},actual[16]={0},snapshot[VC_HEADER+4];
   struct vc_result r;
-  config_db.type='VCTL';config_db.creator='FNVC';config_db.count=1;
+  config_db.type='VCTL';config_db.creator=VC_CREATOR;config_db.count=1;
   config_db.records[0].bytes=config;config_db.records[0].size=68;
   memcpy(config,"VCC1",4);vc_put32(config+4,1);config[8]=1;
   vc_put32(config+24,16);vc_put32(config+28,0xecbb4b55UL);
@@ -88,7 +89,7 @@ int main(void) {
   config[64]^=1;initialize(&r);assert(vc_store_begin(&r));config[64]^=1;
   assert(result_db.count==4);
   config_db.type='WRNG';initialize(&r);assert(vc_store_begin(&r));config_db.type='VCTL';
-  result_db.creator='WRNG';initialize(&r);assert(vc_store_begin(&r));result_db.creator='FNVC';
+  result_db.creator='WRNG';initialize(&r);assert(vc_store_begin(&r));result_db.creator=VC_CREATOR;
   assert(result_db.count==4);
   /* New pattern metadata must not replace the original control identity or
    * reset the existing session sequence. A wrong reference fails closed. */

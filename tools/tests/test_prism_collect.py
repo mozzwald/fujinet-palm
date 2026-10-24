@@ -580,3 +580,93 @@ class FullLatency(unittest.TestCase):
             self.assertEqual(after,state)
 
 if __name__=='__main__':unittest.main()
+
+class ContinuousEvidence(unittest.TestCase):
+    def fixture(self):
+        rom=bytes(range(256))*28+bytes(range(80))
+        session='0123456789abcdef'*2
+        records=[m.fixture_record(session,rom,1,1,0),m.fixture_record(session,rom,1,1,1,rom)]
+        d=m.decode_pdb(m.make_pdb(m.DB,records),session,rom)[1]
+        n=len(rom)//2
+        rp=dict(run=7,limit=0,continuous=1,stopped=1,arm_pending=0,
+                requests=n,posted=n,completed=n,attempted=n,cancelled=0,empty_ends=0)
+        d['rp_armed']=dict(rp,stopped=0)
+        d['rp_config']=dict(engine='continuous-v1',continuous=True,words=n,
+                            response='cpu-rom',marker='drive',full_image=True)
+        return d,rp
+
+    def test_continuous_complete_and_failed_ownership(self):
+        d,rp=self.fixture()
+        with tempfile.TemporaryDirectory() as tmp:
+            m.report(Path(tmp),d,rp)
+            self.assertEqual(json.loads((Path(tmp)/'report.json').read_text())['result'],'PASS')
+        for field,value in [('limit',3624),('continuous',0),('run',8),('stopped',0),
+                            ('requests',1),('posted',1),('attempted',1),('cancelled',1),('empty_ends',1)]:
+            with self.subTest(field=field),tempfile.TemporaryDirectory() as tmp:
+                m.report(Path(tmp),d,dict(rp,**{field:value}))
+                self.assertEqual(json.loads((Path(tmp)/'report.json').read_text())['result'],'COLLECTION ERROR')
+
+    def test_wrong_mode_cannot_qualify_rom(self):
+        d,rp=self.fixture();d['rp_config']['response']='cpu-zero'
+        with tempfile.TemporaryDirectory() as tmp:
+            m.report(Path(tmp),d,rp)
+            self.assertEqual(json.loads((Path(tmp)/'report.json').read_text())['result'],'COLLECTION ERROR')
+
+class CheckerProfiles(unittest.TestCase):
+    def tearDown(self):
+        m.configure_profile('baseline')
+
+    def test_distinct_creator_and_database_reject_cross_profile(self):
+        rom=bytes(range(256))*2;session='0123456789abcdef'*2
+        m.configure_profile('baseline')
+        baseline=m.make_pdb(m.DB,[m.fixture_record(session,rom,1,2,0)])
+        m.configure_profile('romprobe')
+        self.assertEqual(m.DB_CREATOR,b'FNVD')
+        self.assertEqual(m.CONTROL_DB,'ROMProbeControl')
+        alternate=m.make_pdb(m.DB,[m.fixture_record(session,rom,1,2,0)])
+        self.assertEqual(m.decode_pdb(alternate,session,rom)[1]['result'],'INCOMPLETE')
+        with self.assertRaises(m.CollectionError):m.decode_pdb(baseline,session,rom)
+        m.configure_profile('baseline')
+        with self.assertRaises(m.CollectionError):m.decode_pdb(alternate,session,rom)
+
+    def test_cli_profile_setup_and_baseline_session_rejection(self):
+        rom=bytes(range(256))*2
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);(root/'rom').write_bytes(rom)
+            prc=bytearray(78);prc[60:68]=b'applFNVD';(root/'prc').write_bytes(prc)
+            with contextlib.redirect_stdout(io.StringIO()):
+                rc=m.main(['setup',str(root/'session'),'--rom',str(root/'rom'),
+                           '--prc',str(root/'prc'),'--profile','romprobe'])
+            self.assertEqual(rc,0)
+            self.assertEqual(json.loads((root/'session/session.json').read_text())['profile'],'romprobe')
+            control=(root/'session/ROMProbeControl.pdb').read_bytes()
+            self.assertEqual(control[64:68],b'FNVD')
+            m.configure_profile('baseline')
+            with self.assertRaisesRegex(m.CollectionError,'profile mismatch'):
+                m.load_session(root/'session')
+
+class ContinuousConsole(unittest.TestCase):
+    def test_status_refuses_bounded_or_inactive_arm(self):
+        rp=m.ContinuousRP.__new__(m.ContinuousRP)
+        fields=dict(rom_ready=1,ready=1,stopped=0,arm_pending=0,active=1,run=2,
+                    requests=0,posted=0,completed=0,limit=0,attempted=0,cancelled=0,empty_ends=0,continuous=1)
+        rp.send=lambda _:None
+        rp.read=lambda _: ' '.join(f'{k}={v}' for k,v in fields.items())
+        self.assertEqual(rp.status()['limit'],0)
+        fields['limit']=64
+        with self.assertRaises(m.CollectionError):rp.status()
+        fields['limit']=0;fields['active']=0
+        with self.assertRaisesRegex(m.CollectionError,'arm confirmation'):
+            rp.arm(dict(rom_ready=1,ready=1,stopped=1,arm_pending=0,run=1),64)
+
+    def test_identity_requires_exact_image_and_new_banner(self):
+        rp=m.ContinuousRP.__new__(m.ContinuousRP)
+        rp.stop=lambda: {'stopped':1}
+        rp.send=lambda _:None
+        rom=bytes(range(256))*2
+        text=f'CONTINUOUS version=1 response=cpu-rom marker=drive continuous=1 words=256 crc={m.crc(rom):08x} clock_khz=150000'
+        rp.read=lambda _:text
+        self.assertEqual(rp.identify_continuous(rom,'cpu-rom',64)[1]['engine'],'continuous-v1')
+        with self.assertRaises(m.CollectionError):rp.identify_continuous(rom+b'00','cpu-rom',64)
+        text='FujiSpring LATENCY DIAGNOSTIC / bounded reads / 150MHz'
+        with self.assertRaises(m.CollectionError):rp.identify_continuous(rom,'cpu-rom',64)

@@ -1,3 +1,4 @@
+#include "app_identity.h"
 /* Separate RAM diagnostic. Never embed this in the image it checks: its
  * expected length/CRC come from the independently verified module artifact. */
 #include <PalmOS.h>
@@ -94,8 +95,8 @@ static int journal(void *ctx, unsigned long original) {
   UInt32 value = original, verify = 0;
   UInt16 size = sizeof(verify);
   (void)ctx;
-  PrefSetAppPreferences('FNVC', 1, 1, &value, sizeof(value), true);
-  if (PrefGetAppPreferences('FNVC', 1, &verify, &size, true) != 1 ||
+  PrefSetAppPreferences(VC_CREATOR, 1, 1, &value, sizeof(value), true);
+  if (PrefGetAppPreferences(VC_CREATOR, 1, &verify, &size, true) != 1 ||
       size != sizeof(verify) || verify != value) return 0x8204;
   return 0;
 }
@@ -345,7 +346,7 @@ UInt32 PilotMain(UInt16 cmd, MemPtr params, UInt16 flags) {
   {
     UInt32 pending = 0;
     UInt16 size = sizeof(pending);
-    Int16 version = PrefGetAppPreferences('FNVC', 1, &pending, &size, true);
+    Int16 version = PrefGetAppPreferences(VC_CREATOR, 1, &pending, &size, true);
     MemSet(&run, sizeof(run), 0);
     /* Missing preference is a clean first launch; malformed records fail closed. */
     if (version != noPreferenceFound &&

@@ -67,5 +67,45 @@ class ROMTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             module.verify(self.rom[:-2], self.prc)
 
+class DistinctROMTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        app=ROOT/'palm/apps/romprobe'
+        cls.rom=(app/'build/romprobe.rom').read_bytes()
+        cls.prc=(app/'romprobe.prc').read_bytes()
+
+    def test_explicit_distinct_identity(self):
+        result=module.verify(self.rom,self.prc,b'FNVR')
+        self.assertEqual(result['database'],'FujiNet ROM Probe')
+        self.assertEqual(result['creator'],'FNVR')
+        self.assertEqual(result['access_time_ns'],330)
+        self.assertFalse(result['hardware_verified'])
+        with self.assertRaises(ValueError):
+            module.verify(self.rom,self.prc)
+        with self.assertRaises(ValueError):
+            module.verify((ROOT/'palm/apps/visorbus/build/visorbus.rom').read_bytes(),
+                          (ROOT/'palm/apps/visorbus/visorbus.prc').read_bytes(),b'FNVR')
+
+    def recalc(self,data):
+        crc=binascii.crc_hqx(data[:112],0)
+        crc=binascii.crc_hqx(data[114:],crc)
+        struct.pack_into('>H',data,112,crc)
+
+    def test_no_reset_after_install_notification(self):
+        data=bytearray(self.rom)
+        directory=struct.unpack_from('>I',data,316)[0]-0x08000000
+        db=struct.unpack_from('>I',data,directory+6)[0]-0x08000000
+        attr=struct.unpack_from('>H',data,db+32)[0]
+        struct.pack_into('>H',data,db+32,attr|0x0020);self.recalc(data)
+        with self.assertRaisesRegex(ValueError,'reset notification'):
+            module.verify(data,self.prc,b'FNVR')
+
+    def test_probe_requires_current_330ns_token(self):
+        data=bytearray(self.rom)
+        token=struct.unpack_from('>I',data,100)[0]-0x08000000
+        data[token+6:token+9]=b'300';self.recalc(data)
+        with self.assertRaisesRegex(ValueError,'330 ns'):
+            module.verify(data,self.prc,b'FNVR')
+
 if __name__ == '__main__':
     unittest.main()

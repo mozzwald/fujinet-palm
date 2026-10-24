@@ -7,7 +7,9 @@ import json
 from pathlib import Path
 import struct
 
-def verify(data, prc):
+def verify(data, prc, creator=b'FNVB'):
+    if creator not in (b'FNVB', b'FNVR'):
+        raise ValueError('unsupported expected creator')
     def require(ok, message):
         if not ok:
             raise ValueError(message)
@@ -38,16 +40,20 @@ def verify(data, prc):
     require(crc == u16(112), 'card CRC16 mismatch')
     token = ptr(u32(100))
     require(data[token:token+6] == b'HsAT\x00\x03', 'HsAT inline token')
-    require(data[token+6:token+9] == b'300', 'HsAT must be 300 ns')
+    access_time = 330 if creator == b'FNVR' else 300
+    require(data[token+6:token+9] == str(access_time).encode(), f'HsAT must be {access_time} ns')
     require(data[token+10:token+14] == b'\xff'*4, 'token terminator')
     directory = ptr(u32(256+60))
     require(u32(directory) == 0 and u16(directory+4) == 1, 'one database expected')
     db = ptr(u32(directory+6))
     require(data[db:db+32] == prc[:32], 'database name differs')
-    require(data[db+60:db+68] == b'applFNVB', 'application identity')
+    require(data[db+60:db+68] == b'appl'+creator, 'application identity')
     require(u16(db+32) & 3 == 3, 'read-only resource database required')
+    if creator == b'FNVR':
+        require(prc[:32].split(b'\0',1)[0] == b'FujiNet ROM Probe', 'ROM probe database name')
+        require(not u16(db+32) & 0x0020, 'ROM probe must not request reset notification')
     require(u32(db+72) == 0, 'unexpected continuation list')
-    require(len(prc) >= 78 and prc[60:68] == b'applFNVB', 'not a Visor test PRC')
+    require(len(prc) >= 78 and prc[60:68] == b'appl'+creator, 'not a Visor test PRC')
     resources = struct.unpack_from('>H', prc, 76)[0]
     require(u16(db+76) == resources, 'resource count differs')
     require(78 + resources*10 <= len(prc), 'truncated PRC directory')
@@ -66,8 +72,8 @@ def verify(data, prc):
             pattern_seen = True
     require(pattern_seen, 'pattern resource missing')
     return {'size': len(data), 'sha256': hashlib.sha256(data).hexdigest(),
-            'crc16': f'{crc:04x}', 'access_time_ns': 300, 'resource_count': resources,
-            'database': 'Visor Bus Test', 'prc_sha256': hashlib.sha256(prc).hexdigest(),
+            'crc16': f'{crc:04x}', 'access_time_ns': access_time, 'resource_count': resources,
+            'database': prc[:32].split(b'\0',1)[0].decode('ascii'), 'creator': creator.decode('ascii'), 'prc_sha256': hashlib.sha256(prc).hexdigest(),
             'hardware_verified': False}
 
 def main():
@@ -75,9 +81,10 @@ def main():
     parser.add_argument('rom', type=Path)
     parser.add_argument('--prc', required=True, type=Path)
     parser.add_argument('--manifest', type=Path)
+    parser.add_argument('--creator', choices=('FNVB','FNVR'), default='FNVB')
     args = parser.parse_args()
     try:
-        result = verify(args.rom.read_bytes(), args.prc.read_bytes())
+        result = verify(args.rom.read_bytes(), args.prc.read_bytes(), args.creator.encode())
     except (OSError, ValueError, struct.error) as error:
         parser.exit(1, f'ROM validation failed: {error}\n')
     text = json.dumps(result, indent=2)+'\n'

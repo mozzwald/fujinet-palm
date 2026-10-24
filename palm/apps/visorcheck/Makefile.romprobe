@@ -1,0 +1,22 @@
+# Isolated FNVD RAM checker reference for the distinct FNVR ROM. The original
+# checker, expected header, PRC and automated session remain untouched.
+CC = m68k-palmos-gcc
+PYTHON = python3
+OUT = build/romprobe-checker
+REF = ../romprobe/build/romprobe
+SOURCES = visorcheck.c diagnostic.c read_spacing.c burst_read.c result_codec.c result_store.c timed_read.c image_read.c ../visorbus/read_test.c
+.PHONY: all
+all: $(OUT)/visorcheck-romprobe.prc
+$(OUT)/expected_rom.h: $(REF).rom $(REF).json ../../../tools/rom-check-info.py
+	mkdir -p $(OUT)
+	$(PYTHON) ../../../tools/rom-check-info.py $(REF).rom $(REF).json $@
+$(OUT)/visorcheck: Makefile.romprobe $(SOURCES) $(wildcard *.h) ../visorbus/read_test.h ../visorbus/hs_card.h $(OUT)/expected_rom.h
+	$(CC) -O2 -Wall -palmos3.5 -DVC_ROMPROBE_REFERENCE=1 -I../visorbus -I$(OUT) -o $@ $(SOURCES)
+$(OUT)/bin.stamp: visorcheck.rcp
+	mkdir -p $(OUT)
+	sed 's/Visor ROM Check/ROM Check R3 ref/' visorcheck.rcp > $(OUT)/visorcheck.rcp
+	cd $(OUT) && pilrc -q visorcheck.rcp
+	touch $@
+$(OUT)/visorcheck-romprobe.prc: $(OUT)/visorcheck $(OUT)/bin.stamp romprobe-checker.def
+	build-prc -o $@ romprobe-checker.def $(OUT)/visorcheck $(OUT)/*.bin
+	$(PYTHON) -c 'from pathlib import Path; p=Path("$@"); b=bytearray(p.read_bytes()); b[36:48]=bytes(12); p.write_bytes(b)'

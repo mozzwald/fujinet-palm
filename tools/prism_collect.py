@@ -22,6 +22,18 @@ ROOT = Path(__file__).resolve().parents[1]
 APP = ROOT / 'palm/apps/visorcheck'
 DEFAULT_ROM = ROOT / 'palm/apps/visorbus/build/visorbus.rom'
 DB = 'VisorCheckResults'
+CONTROL_DB = 'VisorCheckControl'
+DB_CREATOR = b'FNVC'
+PROFILE = 'baseline'
+
+def configure_profile(name):
+    global DB, CONTROL_DB, DB_CREATOR, PROFILE
+    if name not in ('baseline','romprobe'):
+        raise CollectionError('unknown checker profile')
+    PROFILE=name
+    DB,CONTROL_DB,DB_CREATOR=(('ROMProbeResults','ROMProbeControl',b'FNVD') if name=='romprobe' else
+                              ('VisorCheckResults','VisorCheckControl',b'FNVC'))
+
 HEADER = 144
 SPACED_HEADER = 160
 READ_SPACING = ('tick', '100us', '10us', '1us', 'none')
@@ -74,7 +86,7 @@ def make_pdb(name, records, db_type=b'VRSL'):
     header = bytearray(78)
     header[:32] = name.encode('ascii').ljust(32, b'\0')
     struct.pack_into('>H', header, 34, 1)
-    header[60:64], header[64:68] = db_type, b'FNVC'
+    header[60:64], header[64:68] = db_type, DB_CREATOR
     struct.pack_into('>I', header, 68, len(records) + 1)
     struct.pack_into('>H', header, 76, len(records))
     offset = 78 + 8 * len(records) + 2
@@ -85,14 +97,15 @@ def make_pdb(name, records, db_type=b'VRSL'):
     return bytes(header + entries + b'\0\0') + b''.join(records)
 
 
-def pdb_records(data, name=DB, db_type=b'VRSL'):
+def pdb_records(data, name=None, db_type=b'VRSL'):
+    if name is None: name=DB
     if len(data) < 80 or data[:32].split(b'\0')[0] != name.encode():
         raise CollectionError('wrong/truncated Palm database')
     attrs = struct.unpack_from('>H', data, 32)[0]
     # palm-sync reads attributes through the open DLP handle and preserves
     # dmHdrAttrOpen (0x8000) in its exported header. It does not describe an
     # incomplete transfer. Validate the record envelope and payload separately.
-    if attrs & 1 or data[60:68] != db_type + b'FNVC':
+    if attrs & 1 or data[60:68] != db_type + DB_CREATOR:
         raise CollectionError('wrong database type/creator or resource database')
     if struct.unpack_from('>II', data, 52) != (0, 0) or struct.unpack_from('>I', data, 72)[0]:
         raise CollectionError('unsupported app/sort blocks or chained record list')
@@ -444,6 +457,53 @@ class RP:
         raise CollectionError('ROM read timeout; test not complete')
 
 
+class ContinuousRP(RP):
+    """Explicit opt-in; never treated as a bounded firmware identity."""
+    def status(self):
+        self.read(.05); self.send('s'); text = self.read(.2)
+        fields = {k:int(v) for k,v in re.findall(r'(\w+)=(\d+)',text)}
+        required = {'rom_ready','ready','stopped','arm_pending','run','requests','posted',
+                    'completed','limit','attempted','cancelled','empty_ends','continuous','active'}
+        if not required <= fields.keys() or fields['continuous'] != 1 or fields['limit'] != 0:
+            raise CollectionError('incomplete/unrecognized continuous status')
+        return fields
+
+    def identify_continuous(self, rom, response, words):
+        before = self.stop()
+        commands = {'cpu-rom':'R','cpu-zero':'Z','cpu-ones':'F'}
+        if response not in commands:
+            raise CollectionError('continuous supports CPU ROM/zero/ones only')
+        self.send(commands[response]); self.read(.1); self.send('q'); text=self.read(.3)
+        expected = (response, str(len(rom)//2), f'{crc(rom):08x}', '150000')
+        match = re.search(r'CONTINUOUS version=1 response=([a-z-]+) marker=drive continuous=1 words=(\d+) crc=([0-9a-f]{8}) clock_khz=(\d+)',text)
+        if not match or match.groups() != expected:
+            raise CollectionError('continuous firmware/ROM identity mismatch; no test armed')
+        return before, dict(response=response, marker='drive', words=words,
+                            engine='continuous-v1', continuous=True, full_image=words==len(rom)//2)
+
+    def arm(self, previous, words, command='b'):
+        if not (previous['rom_ready'] and previous['ready'] and previous['stopped'] and not previous['arm_pending']):
+            raise CollectionError('continuous RP not ready to arm')
+        self.send('b'); status=self.status()
+        if (status['run'] != previous['run']+1 or status['stopped'] or status['arm_pending'] or not status['active'] or
+            any(status[k] for k in ('requests','posted','completed','attempted','cancelled','empty_ends'))):
+            raise CollectionError('continuous arm confirmation failed')
+        return status
+
+    def wait(self, armed, timeout, collect_on_hotsync=True):
+        # No transaction budget: explicitly stop only after user saves and starts
+        # HotSync. Never stop merely because an arbitrary number of reads passed.
+        end=time.monotonic()+timeout
+        while time.monotonic()<end:
+            status=self.status()
+            if status['run'] != armed['run'] or status['stopped'] or status['arm_pending'] or not status['active']:
+                raise CollectionError('continuous responder stopped/changed unexpectedly')
+            if find_palm():
+                return self.stop()
+            time.sleep(1)
+        raise CollectionError('continuous read timeout; result incomplete')
+
+
 def rp_port(explicit):
     if explicit:
         return explicit
@@ -458,21 +518,23 @@ def setup(args):
     directory = args.directory.resolve()
     directory.mkdir(parents=True, exist_ok=False)
     rom, prc = args.rom.read_bytes(), args.prc.read_bytes()
+    if PROFILE == 'romprobe' and prc[60:68] != b'applFNVD':
+        raise CollectionError('romprobe profile requires the distinct FNVD RAM checker PRC')
     if not rom or len(rom) & 1 or len(rom)>12000:
         raise CollectionError('unsupported ROM size')
     session = secrets.token_hex(16)
     (directory/'reference.rom').write_bytes(rom)
     (directory/'visorcheck.prc').write_bytes(prc)
-    control = make_pdb('VisorCheckControl',[config_record(session,rom)],b'VCTL')
-    (directory/'VisorCheckControl.pdb').write_bytes(control)
+    control = make_pdb(CONTROL_DB,[config_record(session,rom)],b'VCTL')
+    (directory/(CONTROL_DB+'.pdb')).write_bytes(control)
     for kind, name in [(2,'pass-fixture.pdb'),(3,'fail-fixture.pdb')]:
         actual = rom if kind == 2 else bytes(b ^ (i&1) for i,b in enumerate(rom))
         records = [fixture_record(session,rom,1,kind,0),
                    fixture_record(session,rom,1,kind,1 if kind==2 else 2,actual)]
         (directory/name).write_bytes(make_pdb(DB,records))
-    atomic_json(directory/'session.json', dict(version=1,session=session,last_sequence=0,
+    atomic_json(directory/'session.json', dict(version=1,profile=PROFILE,session=session,last_sequence=0,
                 rom_sha256=hashlib.sha256(rom).hexdigest(),prc_sha256=hashlib.sha256(prc).hexdigest(),
-                transport_verified=False,transport='pilot-link',installed=False,pending=None,validation=[]))
+                transport_verified=False,transport='palm-sync' if PROFILE=='romprobe' else 'pilot-link',installed=False,pending=None,validation=[]))
     print(f'Session prepared: {directory}\nNo hardware accessed. Next: install, then probe.')
 
 
@@ -480,6 +542,8 @@ def load_session(directory):
     directory = directory.resolve()
     state = json.loads((directory/'session.json').read_text())
     rom = (directory/'reference.rom').read_bytes()
+    if state.get('profile','baseline') != PROFILE:
+        raise CollectionError('session/checker profile mismatch; use --profile '+state.get('profile','baseline'))
     if state['version'] != 1 or state['rom_sha256'] != hashlib.sha256(rom).hexdigest():
         raise CollectionError('invalid session/reference identity')
     if len(bytes.fromhex(state['session'])) != 16:
@@ -497,7 +561,14 @@ def report(directory, d, rp=None):
         else:
             armed = d['rp_armed']
             config = d.get('rp_config')
-            if d['kind'] >= 4:
+            continuous = bool(config and config.get('continuous'))
+            if continuous:
+                if (config.get('engine') != 'continuous-v1' or config.get('marker') != 'drive' or
+                    config.get('words') != d['expected_size']//2 or
+                    config.get('response') != {1:'cpu-rom',4:'cpu-zero',5:'cpu-ones',6:'cpu-rom'}.get(d['kind'])):
+                    result['result']='COLLECTION ERROR'
+                    result['collection_error']='continuous configuration mismatch'
+            elif d['kind'] >= 4:
                 allowed = {4: ('cpu-zero', 'pio-zero'), 5: ('cpu-ones', 'pio-ones'), 6: ('cpu-rom',)}[d['kind']]
                 if (not config or config.get('response') not in allowed or
                         config.get('marker') not in MARKERS or config.get('words') != SHORT_BYTES//2):
@@ -513,7 +584,17 @@ def report(directory, d, rp=None):
                     result['collection_error'] = 'missing or mismatched full ROM engine/capability evidence'
             wanted_posted = 0 if config and config.get('response','').startswith('pio-') else d['expected_size']//2
             result['rp_address_validation'] = ('not sampled in PIO constant mode' if config and config.get('response','').startswith('pio-') else 'CPU sequential address check')
-            if (rp['run'] != armed['run'] or rp['limit'] != d['expected_size']//2 or
+            if continuous:
+                n=d['expected_size']//2
+                result['rp_address_validation']='arbitrary/repeated addresses permitted; payload independently checked'
+                if (rp.get('continuous') != 1 or armed.get('continuous') != 1 or
+                    rp['run'] != armed['run'] or rp['limit'] != 0 or armed.get('limit') != 0 or
+                    not rp['stopped'] or rp['arm_pending'] or
+                    any(rp[k] != n for k in ('requests','posted','completed','attempted')) or
+                    any(rp[k] for k in ('cancelled','empty_ends'))):
+                    result['result']='COLLECTION ERROR'
+                    result['collection_error']='continuous identity/count/cancellation/stop mismatch'
+            elif (rp['run'] != armed['run'] or rp['limit'] != d['expected_size']//2 or
                 armed.get('limit') != d['expected_size']//2 or
                 not rp['stopped'] or rp['arm_pending']):
                 result['result'] = 'COLLECTION ERROR'
@@ -534,7 +615,7 @@ def report(directory, d, rp=None):
                   'Requested delay is not a measured bus gap or setup/hold margin.']
     if d.get('rp_config'):
         config = d['rp_config']
-        lines[7:7] = [f"Responder: {config['response']}; marker: {config['marker']}; budget: {config['words']} words.",
+        lines[7:7] = [f"Responder: {config['response']}; marker: {config['marker']}; expected reads: {config['words']} words.",
                       f"Address validation: {result.get('rp_address_validation', 'unqualified')}."]
     lines += [f"| {m['offset']:04X} | {m['expected']:04X} | {m['actual']:04X} |" for m in d['mismatches']]
     if result.get('collection_error'):
@@ -578,7 +659,7 @@ def collect(directory, state, rom, timeout):
     if d['kind'] in (4,5) and result['result']=='PASS':
         state.setdefault('spacing_validation',[]).append(dict(sequence=seq,kind=d['kind'],
             read_spacing=d['read_spacing'],capture_profile=d['capture_profile'],words=64,
-            app_version=d['app_version']))
+            app_version=d['app_version'],continuous=bool(d.get('rp_config',{}).get('continuous'))))
     state['last_app_version']=d['app_version']
     state['last_sequence'],state['pending']=seq,None
     atomic_json(directory/'session.json',state)
@@ -613,14 +694,14 @@ def execute(args):
                 prc=directory/'visorcheck.prc'
                 if hashlib.sha256(prc.read_bytes()).hexdigest()!=state['prc_sha256']:
                     raise CollectionError('prepared PRC changed')
-                transfer(directory,output,'--install',[prc,directory/'VisorCheckControl.pdb'],args.timeout,transport=transport)
+                transfer(directory,output,'--install',[prc,directory/(CONTROL_DB+'.pdb')],args.timeout,transport=transport)
                 state['installed']=True
                 state['transport_verified']=False
             else:
                 if not state['installed']:
                     raise CollectionError('install session control database before probe')
-                transfer(directory,output,'--fetch',['VisorCheckControl'],args.timeout,transport=transport)
-                raw=pdb_records((output/'VisorCheckControl.pdb').read_bytes(),'VisorCheckControl',b'VCTL')
+                transfer(directory,output,'--fetch',[CONTROL_DB],args.timeout,transport=transport)
+                raw=pdb_records((output/(CONTROL_DB+'.pdb')).read_bytes(),CONTROL_DB,b'VCTL')
                 if raw != [config_record(state['session'],rom)]:
                     raise CollectionError('control PDB did not round-trip intact')
                 state['transport_verified']=True
@@ -643,7 +724,8 @@ def execute(args):
         if args.kind == 'rom' and fast_collection:
             validated = {v['kind'] for v in state.get('spacing_validation', [])
                          if v['read_spacing']==read_spacing and v['capture_profile']==capture_profile and v['words']==64
-                         and v.get('app_version',0x600)==state.get('last_app_version',0x600)}
+                         and v.get('app_version',0x600)==state.get('last_app_version',0x600)
+                         and (not getattr(args,'continuous',False) or v.get('continuous') is True)}
             if not {4,5} <= validated:
                 raise CollectionError('first collect passing Zero and Ones64 at this exact spacing/capture before full ROM')
         seq=state['last_sequence']+1
@@ -659,8 +741,13 @@ def execute(args):
                     started_utc=time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime())))
         try:
             if KIND[args.kind] in BUS_KINDS:
-                rp=RP(rp_port(args.rp),output/'rp-console.log')
-                if full_latency:
+                continuous = getattr(args, 'continuous', False)
+                rp=(ContinuousRP if continuous else RP)(rp_port(args.rp),output/'rp-console.log')
+                if continuous:
+                    response = 'cpu-' + {'rom':'rom','rom-prefix':'rom','constant-zero':'zero','constant-ones':'ones'}[args.kind]
+                    before, config = rp.identify_continuous(rom, response, len(expected_payload(rom,KIND[args.kind]))//2)
+                    atomic_json(output/'rp-config.json',config)
+                elif full_latency:
                     before, config = rp.identify_latency_full(rom, getattr(args, 'marker', 'drive'))
                     atomic_json(output/'rp-config.json',config)
                 elif KIND[args.kind] >= 4:
@@ -720,13 +807,19 @@ def main(argv=None):
             child.add_argument('--marker', choices=MARKERS, default='drive')
             child.add_argument('--read-spacing', choices=READ_SPACING, default='tick')
             child.add_argument('--capture-profile', choices=CAPTURE_PROFILES, default='guarded')
+            child.add_argument('--continuous', action='store_true', help='explicit continuous-v1 candidate; stops on HotSync, no budget')
             child.add_argument('--latency-full-rom', action='store_true',
                                help='full ROM through verified rx-first-v2 engine (requires --kind rom and CPU)')
             child.add_argument('--rp');child.add_argument('--read-timeout',type=float,default=180)
+    for child_parser in sub.choices.values():
+        child_parser.add_argument('--profile', choices=('baseline','romprobe'), default='baseline')
     args=parser.parse_args(argv)
+    configure_profile(args.profile)
     try:
         if getattr(args,'timeout',1)<=0 or getattr(args,'read_timeout',1)<=0:
             raise CollectionError('timeouts must be positive')
+        if getattr(args, 'continuous', False) and (args.kind not in ('rom','rom-prefix','constant-zero','constant-ones') or args.responder != 'cpu' or args.marker != 'drive' or args.latency_full_rom):
+            raise CollectionError('--continuous requires a CPU bus test, drive marker and no --latency-full-rom')
         if getattr(args, 'latency_full_rom', False) and (args.kind != 'rom' or args.responder != 'cpu'):
             raise CollectionError('--latency-full-rom requires --kind rom and --responder cpu')
         if args.command=='run' and KIND[args.kind] not in BUS_KINDS and (args.read_spacing!='tick' or args.capture_profile!='guarded'):

@@ -1,3 +1,4 @@
+#include "app_identity.h"
 #include "result_store.h"
 #include <string.h>
 enum { storeBadConfig=0x8301, storeSequence=0x8302, storeMemory=0x8303,
@@ -5,19 +6,19 @@ enum { storeBadConfig=0x8301, storeSequence=0x8302, storeMemory=0x8303,
 static Err check_database(LocalID id, UInt32 wanted_type) {
   UInt32 type=0, creator=0;
   Err error=DmDatabaseInfo(0,id,0,0,0,0,0,0,0,0,0,&type,&creator);
-  return error ? error : (type!=wanted_type || creator!='FNVC') ? storeWrongDatabase : 0;
+  return error ? error : (type!=wanted_type || creator!=VC_CREATOR) ? storeWrongDatabase : 0;
 }
 Err vc_store_append(const struct vc_result *r, const unsigned char *actual,
                     const unsigned char *expected) {
-  LocalID id=DmFindDatabase(0,"VisorCheckResults");
+  LocalID id=DmFindDatabase(0,VC_RESULTS_DB);
   DmOpenRef db; MemHandle h; MemPtr ptr;
   UInt16 index=dmMaxRecordIndex; Err error;
   unsigned long capacity=VC_HEADER+r->completed*5+4, length;
   unsigned char *bytes;
   if(!id) {
-    error=DmCreateDatabase(0,"VisorCheckResults",'FNVC','VRSL',false);
+    error=DmCreateDatabase(0,VC_RESULTS_DB,VC_CREATOR,'VRSL',false);
     if(error) return error;
-    id=DmFindDatabase(0,"VisorCheckResults");
+    id=DmFindDatabase(0,VC_RESULTS_DB);
   }
   error=check_database(id,'VRSL');
   if(error) return error;
@@ -42,7 +43,7 @@ Err vc_store_append(const struct vc_result *r, const unsigned char *actual,
 }
 Err vc_store_begin_reference(struct vc_result *r, unsigned long reference_size,
                              unsigned long reference_crc) {
-  LocalID id=DmFindDatabase(0,"VisorCheckControl");
+  LocalID id=DmFindDatabase(0,VC_CONTROL_DB);
   DmOpenRef db; MemHandle h; const unsigned char *bytes;
   unsigned char saved[20], verify[20];
   UInt16 size=sizeof(saved); Int16 version; UInt32 sequence;
@@ -60,14 +61,14 @@ Err vc_store_begin_reference(struct vc_result *r, unsigned long reference_size,
     DmCloseDatabase(db); return storeBadConfig;
   }
   MemHandleUnlock(h); DmCloseDatabase(db);
-  version=PrefGetAppPreferences('FNVC',2,saved,&size,true);
+  version=PrefGetAppPreferences(VC_CREATOR,2,saved,&size,true);
   if(version!=noPreferenceFound && (version!=1 || size!=sizeof(saved))) return storeSequence;
   sequence=(version==1 && !memcmp(saved,r->session,16)) ? vc_get32(saved+16) : 0;
   if(sequence==0xffffffffUL) return storeSequence;
   memcpy(saved,r->session,16); vc_put32(saved+16,sequence+1);
-  PrefSetAppPreferences('FNVC',2,1,saved,sizeof(saved),true);
+  PrefSetAppPreferences(VC_CREATOR,2,1,saved,sizeof(saved),true);
   size=sizeof(verify);
-  if(PrefGetAppPreferences('FNVC',2,verify,&size,true)!=1 ||
+  if(PrefGetAppPreferences(VC_CREATOR,2,verify,&size,true)!=1 ||
       size!=sizeof(verify) || memcmp(saved,verify,sizeof(saved))) return storeSequence;
   r->sequence=sequence+1;
   return vc_store_append(r,0,0);
