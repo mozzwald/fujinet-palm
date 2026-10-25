@@ -659,6 +659,18 @@ class ContinuousConsole(unittest.TestCase):
         with self.assertRaisesRegex(m.CollectionError,'arm confirmation'):
             rp.arm(dict(rom_ready=1,ready=1,stopped=1,arm_pending=0,run=1),64)
 
+    def test_continuous_arm_waits_for_idle_without_accepting_pre_cue_reads(self):
+        rp=m.ContinuousRP.__new__(m.ContinuousRP);rp.send=lambda _:None
+        before=dict(rom_ready=1,ready=1,stopped=1,arm_pending=0,run=1)
+        waiting=dict(run=2,stopped=0,arm_pending=0,active=0,requests=0,posted=0,completed=0,attempted=0,cancelled=0,empty_ends=0)
+        active=dict(waiting,active=1)
+        sequence=iter([waiting,active]);rp.status=lambda:next(sequence)
+        with patch.object(m.time,'sleep'):
+            self.assertEqual(rp.arm(before,1219)['active'],1)
+        rp.status=lambda:dict(active,requests=1)
+        with self.assertRaisesRegex(m.CollectionError,'pre-cue'):
+            rp.arm(before,1219)
+
     def test_identity_requires_exact_image_and_new_banner(self):
         rp=m.ContinuousRP.__new__(m.ContinuousRP)
         rp.stop=lambda: {'stopped':1}

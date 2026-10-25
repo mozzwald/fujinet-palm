@@ -150,7 +150,7 @@ def run(directory,state,rom,args):
         state['pending']=dict(sequence=1,kind='rom',directory=output.name,read_spacing='none',capture_profile='burst64',
                               engine='persistent',firmware_sha256=state['firmware_sha256'])
         p.atomic_json(directory/'session.json',state)
-        armed=rp.arm(before,len(rom)//2);p.atomic_json(output/'rp-armed.json',armed)
+        armed=rp.arm(before,len(rom)//2,ready_timeout=60);p.atomic_json(output/'rp-armed.json',armed)
         print(f'ARMED RP{armed["run"]}: one full ROM, {len(rom)//2} words. Run/Read ONCE with None + Burst64, then saved tone and HotSync. No UART polling.',flush=True)
         end=time.monotonic()+args.read_timeout
         while not p.find_palm():
@@ -206,11 +206,29 @@ def readback_gate(directory,rom,firmware):
                 report_sha256=sha(reports[0].read_bytes()))
 
 
+def recover_startup(directory,state):
+    pending=state['pending']
+    if not pending or state['last_sequence'] or pending['sequence']!=1:
+        raise p.CollectionError('not a recoverable unused startup')
+    output=directory/pending['directory']
+    if (output/'rp-armed.json').exists() or (output/'report.json').exists():
+        raise p.CollectionError('an armed/read trial must be collected, never abandoned')
+    final=json.loads((output/'rp-final.json').read_text())
+    if (final.get('stopped')!=1 or any(final.get(k)!=0 for k in
+            ('active','arm_pending','requests','posted','completed','attempted','cancelled','empty_ends'))):
+        raise p.CollectionError('startup has active or nonzero transaction evidence')
+    p.atomic_json(output/'startup-aborted.json',dict(test_started=False,read_cue_given=False,
+        reason='Host arm confirmation did not observe active; stopped with zero requests. Preserve this attempt.'))
+    state.setdefault('aborted_startups',[]).append(pending['directory'])
+    state['pending']=None;p.atomic_json(directory/'session.json',state)
+    print('Zero-request startup preserved; the single ROM read remains unused.')
+
+
 def main():
     parser=argparse.ArgumentParser(description=__doc__);sub=parser.add_subparsers(dest='command',required=True)
     prep=sub.add_parser('prepare');prep.add_argument('directory',type=Path);prep.add_argument('--paired-session',type=Path,required=True)
     prep.add_argument('--firmware-sha256',required=True);prep.add_argument('--authorization',required=True)
-    for name in ('connect','run','collect'):
+    for name in ('connect','run','collect','recover-startup'):
         child=sub.add_parser(name);child.add_argument('directory',type=Path);child.add_argument('--timeout',type=float,default=1800)
         if name=='run':child.add_argument('--rp',default='/dev/ttyACM0');child.add_argument('--read-timeout',type=float,default=7200)
     args=parser.parse_args()
@@ -219,6 +237,7 @@ def main():
     with (directory/'session.lock').open('a') as lock:
         fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
         if args.command=='connect':connect(directory,state,args.timeout);return 0
+        if args.command=='recover-startup':recover_startup(directory,state);return 0
         if args.command=='collect':return collect(directory,state,rom,args.timeout)
         return run(directory,state,rom,args)
 

@@ -109,6 +109,21 @@ class QualifiedReadback(unittest.TestCase):
             with self.assertRaises(p.CollectionError):q.run(directory,state,rom,object())
         ctor.assert_not_called()
 
+    def test_recover_only_unused_zero_request_startup(self):
+        directory=self.prepare();directory,state,_=q.load(directory)
+        output=directory/'run-000001-startup';output.mkdir()
+        state['pending']=dict(sequence=1,directory=output.name)
+        final=dict(stopped=1,active=0,arm_pending=0,requests=0,posted=0,completed=0,attempted=0,cancelled=0,empty_ends=0)
+        (output/'rp-final.json').write_text(json.dumps(final))
+        (output/'rp-armed.json').write_text('{}')
+        with self.assertRaises(p.CollectionError):q.recover_startup(directory,state)
+        (output/'rp-armed.json').unlink();final['requests']=1;(output/'rp-final.json').write_text(json.dumps(final))
+        with self.assertRaises(p.CollectionError):q.recover_startup(directory,state)
+        final['requests']=0;(output/'rp-final.json').write_text(json.dumps(final))
+        with contextlib.redirect_stdout(io.StringIO()):q.recover_startup(directory,state)
+        self.assertIsNone(state['pending']);self.assertEqual(state['last_sequence'],0)
+        self.assertTrue((output/'startup-aborted.json').exists())
+
     def test_report_requires_persistent_marker_and_stopped_final_totals(self):
         # Use the existing ROM result fixture; only responder metadata changes.
         from test_prism_collect import Records

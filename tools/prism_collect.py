@@ -485,14 +485,23 @@ class ContinuousRP(RP):
         return before, dict(response=response, marker=marker, words=words,
                             engine='continuous-v'+match[1], continuous=True, full_image=words==len(rom)//2)
 
-    def arm(self, previous, words, command='b'):
+    def arm(self, previous, words, command='b', ready_timeout=2):
         if not (previous['rom_ready'] and previous['ready'] and previous['stopped'] and not previous['arm_pending']):
             raise CollectionError('continuous RP not ready to arm')
-        self.send('b'); status=self.status()
-        if (status['run'] != previous['run']+1 or status['stopped'] or status['arm_pending'] or not status['active'] or
-            any(status[k] for k in ('requests','posted','completed','attempted','cancelled','empty_ends'))):
-            raise CollectionError('continuous arm confirmation failed')
-        return status
+        self.send('b'); deadline=time.monotonic()+ready_timeout
+        while True:
+            status=self.status()
+            if (status['run']==previous['run']+1 and not status['stopped'] and
+                    not status['arm_pending'] and status['active']):
+                if any(status[k] for k in ('requests','posted','completed','attempted','cancelled','empty_ends')):
+                    raise CollectionError('continuous arm confirmation failed: unexpected pre-cue reads')
+                return status
+            # Core1 may have accepted b but still be waiting for CS0/OE idle.
+            waiting=(status['run']==previous['run'] and status['arm_pending'] or
+                     status['run']==previous['run']+1 and not status['stopped'] and not status['active'])
+            if not waiting or time.monotonic()>=deadline:
+                raise CollectionError('continuous arm confirmation failed')
+            time.sleep(.05)
 
     def wait(self, armed, timeout, collect_on_hotsync=True):
         # No transaction budget: explicitly stop only after user saves and starts

@@ -34,7 +34,8 @@ def main():
         config['quiet_during_recognition']=args.engine=='persistent'
         p.atomic_json(args.log_dir/'before.json',before)
         p.atomic_json(args.log_dir/'config.json',config)
-        armed=rp.arm(before,len(rom)//2)
+        armed=(rp.arm(before,len(rom)//2,ready_timeout=60) if args.engine=='persistent'
+               else rp.arm(before,len(rom)//2))
         p.atomic_json(args.log_dir/'armed.json',armed)
         print('ACTIVE continuous ROM. Manual recognition only; do not launch the ROM app. Ctrl-C to stop.',flush=True)
         with (args.log_dir/'status.jsonl').open('x') as log:
