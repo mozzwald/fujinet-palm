@@ -184,6 +184,7 @@ def decode_record(raw, rom):
              capture_mode=profile, delay_iterations=iterations, batch_words=batch,
              read_spacing=READ_SPACING[mode], capture_profile=CAPTURE_PROFILES[profile])
     actual = raw[header:header+d['completed']]
+    d['payload_sha256'] = hashlib.sha256(actual).hexdigest()
     if crc(actual) != d['crc']:
         raise CollectionError('captured bytes disagree with bus CRC')
     d['mismatches'] = [dict(zip(('offset', 'expected', 'actual'), values))
@@ -566,7 +567,8 @@ def report(directory, d, rp=None):
             config = d.get('rp_config')
             continuous = bool(config and config.get('continuous'))
             if continuous:
-                if (config.get('engine') not in ('continuous-v1','continuous-v2') or config.get('marker') != 'drive' or
+                identity = (config.get('engine'), config.get('marker'))
+                if (identity not in (('continuous-v1','drive'),('continuous-v2','drive'),('continuous-v3','preload')) or
                     config.get('words') != d['expected_size']//2 or
                     config.get('response') != {1:'cpu-rom',4:'cpu-zero',5:'cpu-ones',6:'cpu-rom'}.get(d['kind'])):
                     result['result']='COLLECTION ERROR'
@@ -597,6 +599,9 @@ def report(directory, d, rp=None):
                     any(rp[k] for k in ('cancelled','empty_ends'))):
                     result['result']='COLLECTION ERROR'
                     result['collection_error']='continuous identity/count/cancellation/stop mismatch'
+                if config.get('engine') == 'continuous-v3' and (rp.get('counters_final') != 1 or rp.get('active') != 0):
+                    result['result']='COLLECTION ERROR'
+                    result['collection_error']='persistent responder lacks stopped final counters'
             elif (rp['run'] != armed['run'] or rp['limit'] != d['expected_size']//2 or
                 armed.get('limit') != d['expected_size']//2 or
                 not rp['stopped'] or rp['arm_pending']):
