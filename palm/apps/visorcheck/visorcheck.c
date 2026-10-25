@@ -8,6 +8,7 @@
 #include "result_store.h"
 #include "diagnostic.h"
 #include "burst_read.h"
+#include "pair_app.h"
 #if EXPECTED_ROM_SIZE > VC_MAX_IMAGE
 #error Result record capacity must be reviewed for larger images
 #endif
@@ -250,6 +251,11 @@ static void synthetic(Boolean fail) {
   draw(result_message);
 }
 static Boolean main_event(EventType *e) {
+  if(e->eType==ctlSelectEvent && e->data.ctlSelect.controlID==PairOpenButton) {
+    if(!reading && !run.blocked && reference_crc==EXPECTED_ROM_CRC)
+      vp_open(expected_rom_data,EXPECTED_ROM_SIZE,EXPECTED_ROM_CRC);
+    return true;
+  }
   if (e->eType == frmOpenEvent) {
     FrmDrawForm(FrmGetActiveForm());
     spacing_controls();
@@ -331,7 +337,8 @@ static Boolean main_event(EventType *e) {
 static Boolean app_event(EventType *e) {
   if (e->eType == frmLoadEvent) {
     FormType *form = FrmInitForm(e->data.frmLoad.formID);
-    FrmSetActiveForm(form); FrmSetEventHandler(form, main_event); return true;
+    FrmSetActiveForm(form);
+    FrmSetEventHandler(form,e->data.frmLoad.formID==PairForm?vp_event:main_event); return true;
   }
   return false;
 }
@@ -359,12 +366,13 @@ UInt32 PilotMain(UInt16 cmd, MemPtr params, UInt16 flags) {
   reference_crc = visor_image_local_crc(expected_rom_data, sizeof(expected_rom_data));
   FrmGotoForm(MainForm);
   do {
-    EvtGetEvent(&event, reading ? 0 : evtWaitForever);
+    EvtGetEvent(&event, reading || vp_active() ? 0 : evtWaitForever);
     if (SysHandleEvent(&event)) continue;
     if (MenuHandleEvent(0, &event, &error)) continue;
     if (app_event(&event)) continue;
     FrmDispatchEvent(&event);
   } while (event.eType != appStopEvent);
+  vp_close();
   finish(VC_CANCELLED);
   FrmCloseAllForms();
   return 0;

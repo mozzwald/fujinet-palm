@@ -468,18 +468,20 @@ class ContinuousRP(RP):
             raise CollectionError('incomplete/unrecognized continuous status')
         return fields
 
-    def identify_continuous(self, rom, response, words):
+    def identify_continuous(self, rom, response, words, marker='drive'):
         before = self.stop()
         commands = {'cpu-rom':'R','cpu-zero':'Z','cpu-ones':'F'}
         if response not in commands:
             raise CollectionError('continuous supports CPU ROM/zero/ones only')
         self.send(commands[response]); self.read(.1); self.send('q'); text=self.read(.3)
         expected = (response, str(len(rom)//2), f'{crc(rom):08x}', '150000')
-        match = re.search(r'CONTINUOUS version=1 response=([a-z-]+) marker=drive continuous=1 words=(\d+) crc=([0-9a-f]{8}) clock_khz=(\d+)',text)
-        if not match or match.groups() != expected:
+        match = re.search(r'CONTINUOUS version=([12]) response=([a-z-]+) marker=(drive|preload) continuous=1 words=(\d+) crc=([0-9a-f]{8}) clock_khz=(\d+)',text)
+        if marker not in ('drive','preload') or not match or (match[2],match[4],match[5],match[6]) != expected or match[3]!=marker or (marker=='preload' and match[1]!='2'):
             raise CollectionError('continuous firmware/ROM identity mismatch; no test armed')
-        return before, dict(response=response, marker='drive', words=words,
-                            engine='continuous-v1', continuous=True, full_image=words==len(rom)//2)
+        if match[1]=='2' and before.get('counters_final')!=1:
+            raise CollectionError('PIO-rearm version2 requires stopped counter snapshot metadata')
+        return before, dict(response=response, marker=marker, words=words,
+                            engine='continuous-v'+match[1], continuous=True, full_image=words==len(rom)//2)
 
     def arm(self, previous, words, command='b'):
         if not (previous['rom_ready'] and previous['ready'] and previous['stopped'] and not previous['arm_pending']):
@@ -563,7 +565,7 @@ def report(directory, d, rp=None):
             config = d.get('rp_config')
             continuous = bool(config and config.get('continuous'))
             if continuous:
-                if (config.get('engine') != 'continuous-v1' or config.get('marker') != 'drive' or
+                if (config.get('engine') not in ('continuous-v1','continuous-v2') or config.get('marker') != 'drive' or
                     config.get('words') != d['expected_size']//2 or
                     config.get('response') != {1:'cpu-rom',4:'cpu-zero',5:'cpu-ones',6:'cpu-rom'}.get(d['kind'])):
                     result['result']='COLLECTION ERROR'

@@ -1,7 +1,16 @@
 FORM ID 1000 AT (0 0 160 160)
 NOFRAME
 BEGIN
- TITLE "ROM Inspect RAM R3"
- BUTTON "Scan FNVR" ID 1001 AT (30 142 100 14)
+ TITLE "ROM Inspect RAM R3.1"
+ BUTTON "Scan FNVR" ID 1001 AT (2 142 77 14)
+ BUTTON "Soft reset" ID 1002 AT (81 142 77 14)
 END
-VERSION ID 1 "R3.20261023"
+VERSION ID 1 "R3.1.20261024"
+ALERT ID 1100
+CONFIRMATION
+DEFAULTBUTTON 0
+BEGIN
+ TITLE "Soft reset to rescan"
+ MESSAGE "Restart the Prism with the module seated? RAM data is retained. PalmOS may call ROM reset handlers. No normal ROM app launch is requested."
+ BUTTONS "Cancel" "Soft reset"
+END

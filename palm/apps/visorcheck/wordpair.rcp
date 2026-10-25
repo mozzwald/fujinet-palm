@@ -1,0 +1,26 @@
+VERSION ID 1 "0.8.0"
+FORM ID 2000 AT (0 0 160 160)
+NOFRAME
+BEGIN
+    TITLE "Word Pair RAM 0.8"
+    BUTTON "NOPs" ID 2003 AT (2 126 48 14)
+    BUTTON "Pattern" ID 2004 AT (54 126 52 14)
+    BUTTON "Done" ID 2005 AT (110 126 48 14)
+    BUTTON "Run pair" ID 2001 AT (2 144 76 14)
+    BUTTON "Cancel" ID 2002 AT (82 144 76 14)
+END
+ALERT ID 2100
+CONFIRMATION
+DEFAULTBUTTON 0
+BEGIN
+    TITLE "Two word reads"
+    MESSAGE "Match host NOPs and offset. Four pairs of two MOVE.W instructions; only NOPs between words. One tick between pairs. No timing changes or reset. Await host cue."
+    BUTTONS "Cancel" "Read"
+END
+ALERT ID 2101
+ERROR
+BEGIN
+    TITLE "RAM reference error"
+    MESSAGE "Reference CRC failed. No reads allowed."
+    BUTTONS "OK"
+END

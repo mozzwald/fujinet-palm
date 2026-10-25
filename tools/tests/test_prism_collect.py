@@ -667,6 +667,26 @@ class ContinuousConsole(unittest.TestCase):
         text=f'CONTINUOUS version=1 response=cpu-rom marker=drive continuous=1 words=256 crc={m.crc(rom):08x} clock_khz=150000'
         rp.read=lambda _:text
         self.assertEqual(rp.identify_continuous(rom,'cpu-rom',64)[1]['engine'],'continuous-v1')
+        text=text.replace('version=1','version=2')
+        rp.stop=lambda: {'stopped':1,'counters_final':1}
+        self.assertEqual(rp.identify_continuous(rom,'cpu-rom',64)[1]['engine'],'continuous-v2')
+        text=text.replace('marker=drive','marker=preload')
+        with self.assertRaises(m.CollectionError):rp.identify_continuous(rom,'cpu-rom',64)
+        self.assertEqual(rp.identify_continuous(rom,'cpu-rom',64,marker='preload')[1]['marker'],'preload')
+        text=text.replace('marker=preload','marker=drive')
+        text=text.replace('version=2','version=3')
+        with self.assertRaises(m.CollectionError):rp.identify_continuous(rom,'cpu-rom',64)
         with self.assertRaises(m.CollectionError):rp.identify_continuous(rom+b'00','cpu-rom',64)
         text='FujiSpring LATENCY DIAGNOSTIC / bounded reads / 150MHz'
         with self.assertRaises(m.CollectionError):rp.identify_continuous(rom,'cpu-rom',64)
+
+    def test_multiline_status_complete_and_truncated_last_page(self):
+        rp=m.ContinuousRP.__new__(m.ContinuousRP);rp.send=lambda _:None
+        pages=['rom_ready=1 ready=1 stopped=1 arm_pending=0 active=0 run=0 limit=0 continuous=1\r\n',
+               'requests=0 posted=0 completed=0 attempted=0\r\n',
+               'cancelled=0 empty_ends=0\r\n']
+        rp.read=lambda _:''.join(pages)
+        self.assertEqual(rp.status()['empty_ends'],0)
+        pages.pop()
+        with self.assertRaisesRegex(m.CollectionError,'incomplete'):
+            rp.status()

@@ -1,7 +1,7 @@
 #include "read_test.h"
 
-struct visor_read_result visor_read_check(const struct visor_read_ops *ops,
-                                         unsigned short card) {
+static struct visor_read_result check(const struct visor_read_ops *ops,
+                                     unsigned short card,int require_registered) {
   struct visor_read_result r = {0};
   const unsigned short attrs[] = {visorCardRemovable, visorCardHwInstalled,
                                   visorCardSwInstalled, visorCardReset};
@@ -12,6 +12,7 @@ struct visor_read_result visor_read_check(const struct visor_read_ops *ops,
     return r;
   }
   for (i = 0; i < 4; ++i) {
+    if(i==2 && !require_registered)continue;
     r.attribute = attrs[i];
     r.error = ops->get_byte(ops->context, card, attrs[i], &value);
     if (r.error) { r.reason = visorReadQueryFailed; return r; }
@@ -33,6 +34,15 @@ struct visor_read_result visor_read_check(const struct visor_read_ops *ops,
            r.base > 0xffffffffUL - (r.size - 1))
     r.reason = visorReadBadMapping;
   return r;
+}
+
+struct visor_read_result visor_read_check(const struct visor_read_ops *ops,
+                                         unsigned short card) {
+  return check(ops,card,1);
+}
+struct visor_read_result visor_read_check_physical(const struct visor_read_ops *ops,
+                                                  unsigned short card) {
+  return check(ops,card,0);
 }
 
 struct visor_read_result visor_read_probe(const struct visor_read_ops *ops,

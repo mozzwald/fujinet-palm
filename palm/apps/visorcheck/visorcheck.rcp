@@ -4,10 +4,11 @@ BEGIN
     TITLE "Visor ROM Check 0.6.1"
     BUTTON "Delay: Tick" ID 1009 AT (2 114 100 12)
     BUTTON "Each" ID 1010 AT (106 114 52 12)
-    BUTTON "Run" ID 1001 AT (2 128 36 14)
-    BUTTON "Pass" ID 1004 AT (40 128 36 14)
-    BUTTON "Fail" ID 1005 AT (78 128 36 14)
-    BUTTON "Cancel" ID 1002 AT (116 128 42 14)
+    BUTTON "Run" ID 1001 AT (2 128 26 14)
+    BUTTON "Pass" ID 1004 AT (30 128 26 14)
+    BUTTON "Fail" ID 1005 AT (58 128 26 14)
+    BUTTON "Pairs" ID 1011 AT (86 128 34 14)
+    BUTTON "Cancel" ID 1002 AT (122 128 36 14)
     BUTTON "ROM64" ID 1008 AT (2 144 38 14)
     BUTTON "Zero" ID 1006 AT (42 144 34 14)
     BUTTON "Ones" ID 1007 AT (78 144 34 14)
@@ -29,3 +30,21 @@ BEGIN
     BUTTONS "OK"
 END
 VERSION ID 1 "0.6.1"
+FORM ID 2000 AT (0 0 160 160)
+NOFRAME
+BEGIN
+    TITLE "ROM Pair RAM 0.7"
+    BUTTON "Count" ID 2003 AT (2 126 48 14)
+    BUTTON "Pattern" ID 2004 AT (54 126 52 14)
+    BUTTON "Back" ID 2005 AT (110 126 48 14)
+    BUTTON "Run pair" ID 2001 AT (2 144 76 14)
+    BUTTON "Cancel" ID 2002 AT (82 144 76 14)
+END
+ALERT ID 2100
+CONFIRMATION
+DEFAULTBUTTON 0
+BEGIN
+    TITLE "Paired ROM data reads"
+    MESSAGE "Match host count and offset. Each pair is ONE MOVE.L; one tick separates pairs. No timing changes or reset. Keep module seated. Cancel is available between pairs."
+    BUTTONS "Cancel" "Read"
+END

@@ -21,5 +21,9 @@ struct visor_read_result {
   unsigned long base, size;
 };
 struct visor_read_result visor_read_check(const struct visor_read_ops *, unsigned short);
+/* Bounded RAM diagnostics may inspect a physically installed, mapped ROM even
+ * when recognition/software registration failed. Never fabricates SwInstalled
+ * or changes mapping. The original registered-reader guard is unchanged. */
+struct visor_read_result visor_read_check_physical(const struct visor_read_ops *, unsigned short);
 struct visor_read_result visor_read_probe(const struct visor_read_ops *, unsigned short);
 #endif

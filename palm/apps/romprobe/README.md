@@ -13,7 +13,11 @@ copy before claiming ROM execution. A screen/title or icon alone is insufficient
 
 `../rominspect` builds the separate FNVI RAM inspection app. It enumerates FNVR
 and inspects database/code1/tPAT pointers without calling its application entry.
-It does not trigger insertion, reset, registration or launch. Inspect the module
+Scan does not trigger insertion, reset, registration or launch. The R3.1 inspector
+also offers a separate, confirmation-gated Prism soft reset for recognition with
+a fragile module left seated. PalmOS may call ROM apps with SystemReset during
+that reset; no normal launch is requested. Its PRC does not request reset after
+HotSync installation. Inspect the module
 only after the candidate responder has passed physical readback qualification.
 
 `../visorcheck/Makefile.romprobe` builds a separate FNVD RAM checker with the new
