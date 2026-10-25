@@ -680,6 +680,27 @@ class ContinuousConsole(unittest.TestCase):
         text='FujiSpring LATENCY DIAGNOSTIC / bounded reads / 150MHz'
         with self.assertRaises(m.CollectionError):rp.identify_continuous(rom,'cpu-rom',64)
 
+    def test_persistent_identity_requires_explicit_engine_and_preload(self):
+        rp=m.ContinuousRP.__new__(m.ContinuousRP)
+        rp.stop=lambda: {'stopped':1,'counters_final':1}
+        rp.send=lambda _:None
+        rom=bytes(range(256))*2
+        text=f'CONTINUOUS version=3 response=cpu-rom marker=preload continuous=1 words=256 crc={m.crc(rom):08x} clock_khz=150000'
+        rp.read=lambda _:text
+        with self.assertRaises(m.CollectionError):
+            rp.identify_continuous(rom,'cpu-rom',256,marker='preload')
+        config=rp.identify_continuous(rom,'cpu-rom',256,marker='preload',engine='persistent')[1]
+        self.assertEqual(config['engine'],'continuous-v3')
+        with self.assertRaises(m.CollectionError):
+            rp.identify_continuous(rom,'cpu-rom',256,marker='drive',engine='persistent')
+        text=text.replace('version=3','version=2')
+        with self.assertRaises(m.CollectionError):
+            rp.identify_continuous(rom,'cpu-rom',256,marker='preload',engine='persistent')
+        text=text.replace('version=2','version=3')
+        rp.stop=lambda: {'stopped':1}
+        with self.assertRaises(m.CollectionError):
+            rp.identify_continuous(rom,'cpu-rom',256,marker='preload',engine='persistent')
+
     def test_multiline_status_complete_and_truncated_last_page(self):
         rp=m.ContinuousRP.__new__(m.ContinuousRP);rp.send=lambda _:None
         pages=['rom_ready=1 ready=1 stopped=1 arm_pending=0 active=0 run=0 limit=0 continuous=1\r\n',

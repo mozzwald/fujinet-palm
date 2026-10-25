@@ -128,3 +128,10 @@ Use the explicit marker profile: drive is an enable attempt, preload marks
 reply consumption. Version2 `attempted` counts unmasked-enable outcomes through
 the next instruction; a brief enable on a cancellation boundary may instead
 count as dropped. Neither marker alone proves data validity or Hi-Z.
+
+The separate persistent Core1 experiment identifies as continuous version3.
+Use `paired_collect.py run ... --pattern signature --count 4 --engine persistent
+--marker preload`. The collector rejects version3 without that explicit engine
+and rejects version2 when the persistent engine was requested. Existing RAM
+PRC, MOVE.L instruction, PDB format, serial palm-sync and escalation gates are
+unchanged. A new firmware hash must pass the four-pair gate before larger counts.

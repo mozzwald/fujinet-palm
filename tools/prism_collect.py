@@ -468,18 +468,19 @@ class ContinuousRP(RP):
             raise CollectionError('incomplete/unrecognized continuous status')
         return fields
 
-    def identify_continuous(self, rom, response, words, marker='drive'):
+    def identify_continuous(self, rom, response, words, marker='drive', engine='rearm'):
         before = self.stop()
         commands = {'cpu-rom':'R','cpu-zero':'Z','cpu-ones':'F'}
         if response not in commands:
             raise CollectionError('continuous supports CPU ROM/zero/ones only')
         self.send(commands[response]); self.read(.1); self.send('q'); text=self.read(.3)
         expected = (response, str(len(rom)//2), f'{crc(rom):08x}', '150000')
-        match = re.search(r'CONTINUOUS version=([12]) response=([a-z-]+) marker=(drive|preload) continuous=1 words=(\d+) crc=([0-9a-f]{8}) clock_khz=(\d+)',text)
-        if marker not in ('drive','preload') or not match or (match[2],match[4],match[5],match[6]) != expected or match[3]!=marker or (marker=='preload' and match[1]!='2'):
+        match = re.search(r'CONTINUOUS version=([123]) response=([a-z-]+) marker=(drive|preload) continuous=1 words=(\d+) crc=([0-9a-f]{8}) clock_khz=(\d+)',text)
+        versions = ('3',) if engine=='persistent' else ('1','2') if engine=='rearm' else ()
+        if marker not in ('drive','preload') or not match or match[1] not in versions or (match[2],match[4],match[5],match[6]) != expected or match[3]!=marker or (marker=='preload' and match[1] not in ('2','3')) or (engine=='persistent' and marker!='preload'):
             raise CollectionError('continuous firmware/ROM identity mismatch; no test armed')
-        if match[1]=='2' and before.get('counters_final')!=1:
-            raise CollectionError('PIO-rearm version2 requires stopped counter snapshot metadata')
+        if match[1] in ('2','3') and before.get('counters_final')!=1:
+            raise CollectionError('PIO-rearm requires stopped counter snapshot metadata')
         return before, dict(response=response, marker=marker, words=words,
                             engine='continuous-v'+match[1], continuous=True, full_image=words==len(rom)//2)
 

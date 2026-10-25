@@ -195,6 +195,7 @@ def main():
             sp.add_argument('--pattern',choices=('signature','contrast'),default='signature')
             sp.add_argument('--count',type=int,choices=(4,) if WORD_MODE else COUNTS,default=4)
             sp.add_argument('--marker',choices=('drive','preload'),default='drive')
+            sp.add_argument('--engine',choices=('rearm','persistent'),default='rearm')
             if WORD_MODE:
                 sp.add_argument('--nops',type=int,choices=NOP_COUNTS,default=0)
             sp.add_argument('--rp',default='/dev/ttyACM0');sp.add_argument('--read-timeout',type=float,default=600)
@@ -237,11 +238,11 @@ def main():
         seq=state['last_sequence']+1;output=directory/f'run-{seq:06d}-{secrets.token_hex(4)}';output.mkdir()
         pending=dict(sequence=seq,count=args.count,offset=offset,pattern=args.pattern,directory=output.name,
                      firmware_sha256=state.get('active_firmware_sha256',state.get('firmware_sha256')),
-                     marker=args.marker)
+                     marker=args.marker,engine=args.engine)
         if WORD_MODE:pending['nops']=args.nops
         rp=p.ContinuousRP(args.rp,output/'rp-console.log');final=None
         try:
-            before,config=rp.identify_continuous(rom,'cpu-rom',len(rom)//2,marker=args.marker)
+            before,config=rp.identify_continuous(rom,'cpu-rom',len(rom)//2,marker=args.marker,engine=args.engine)
             p.atomic_json(output/'rp-before.json',before);p.atomic_json(output/'rp-config.json',config)
             state['pending']=pending;p.atomic_json(directory/'session.json',state)
             armed=rp.arm(before,2*args.count);p.atomic_json(output/'rp-armed.json',armed)
