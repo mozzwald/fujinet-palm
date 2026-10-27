@@ -1,0 +1,17 @@
+FORM ID 1000 AT (0 0 160 160)
+NOFRAME
+BEGIN
+ TITLE "Prism Timing P3"
+ BUTTON "Baseline" ID 1001 AT (1 138 54 18)
+ BUTTON "Slower" ID 1002 AT (57 138 48 18)
+ BUTTON "Restore" ID 1003 AT (107 138 51 18)
+END
+VERSION ID 1 "P3.20261026.2"
+
+ALERT ID 1100
+INFORMATION
+BEGIN
+ TITLE "360 ns capture pause"
+ MESSAGE "360 ns selected. Wait for the host capture cue, then Continue. Cancel restores the original setting."
+ BUTTONS "Cancel" "Continue"
+END

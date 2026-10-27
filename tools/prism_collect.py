@@ -97,15 +97,16 @@ def make_pdb(name, records, db_type=b'VRSL'):
     return bytes(header + entries + b'\0\0') + b''.join(records)
 
 
-def pdb_records(data, name=None, db_type=b'VRSL'):
+def pdb_records(data, name=None, db_type=b'VRSL', creator=None):
     if name is None: name=DB
+    if creator is None: creator=DB_CREATOR
     if len(data) < 80 or data[:32].split(b'\0')[0] != name.encode():
         raise CollectionError('wrong/truncated Palm database')
     attrs = struct.unpack_from('>H', data, 32)[0]
     # palm-sync reads attributes through the open DLP handle and preserves
     # dmHdrAttrOpen (0x8000) in its exported header. It does not describe an
     # incomplete transfer. Validate the record envelope and payload separately.
-    if attrs & 1 or data[60:68] != db_type + DB_CREATOR:
+    if attrs & 1 or data[60:68] != db_type + creator:
         raise CollectionError('wrong database type/creator or resource database')
     if struct.unpack_from('>II', data, 52) != (0, 0) or struct.unpack_from('>I', data, 72)[0]:
         raise CollectionError('unsupported app/sort blocks or chained record list')
